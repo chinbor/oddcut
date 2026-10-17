@@ -266,6 +266,7 @@ export default function App() {
                   <span key={r}><i style={{ background: c }} />{n}</span>
                 ))}
               </div>
+              <div className="table-wrap">
               <table>
                 <thead><tr><th>时间</th><th>类型</th><th>素材</th><th>从第几秒</th><th>特效</th><th>换镜头</th></tr></thead>
                 <tbody>
@@ -288,10 +289,11 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
 
             <div className="right">
-            <div className="preview" style={{ aspectRatio: `${aw} / ${ah}` }}>
+            <div className="preview" style={{ aspectRatio: `${aw} / ${ah}`, '--ar': aw / ah }}>
               {shown ? (
                 <video key={shown.video} src={mediaUrl(shown.video)} controls autoPlay />
               ) : (
