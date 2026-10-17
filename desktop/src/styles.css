@@ -370,3 +370,20 @@ button.record.on .rec-dot { animation: armed 1s ease-in-out infinite; box-shadow
 .bar .diamond:hover { transform: rotate(45deg) scale(1.25); }
 .bar .diamond.sel { background: var(--accent); border-color: #fff; }
 @media (max-height: 700px) { .beat-lines { top: 28px; } }
+
+/* picture track: separate clips with a filmstrip, drag to reorder */
+.clip { background: #2a2e38; transition: transform .16s ease, box-shadow .12s; touch-action: none; cursor: grab; }
+.clip .strip { position: absolute; inset: 0; display: flex; pointer-events: none; }
+.clip .strip img { flex: 1 1 0; min-width: 0; height: 100%; object-fit: cover; display: block; }
+.clip .strip img + img { border-left: 1px solid rgba(0,0,0,.45); }
+.clip .num { z-index: 1; }
+.clip .dur { position: absolute; right: 4px; bottom: 4px; z-index: 1; font-size: 10.5px; line-height: 1; padding: 2px 4px; border-radius: 4px; background: rgba(0,0,0,.7); font-variant-numeric: tabular-nums; }
+.clip .gen { bottom: auto; top: 4px; }
+.clip.lifted { transition: none; z-index: 8; cursor: grabbing; opacity: .92; box-shadow: 0 0 0 2px var(--accent), 0 10px 22px rgba(0,0,0,.6); margin-top: -4px; }
+.bar { transition: transform .16s ease; }
+.insert-mark { position: absolute; top: 2px; bottom: 2px; width: 3px; margin-left: -2px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent); z-index: 9; pointer-events: none; }
+.transport .loop { position: absolute; left: 20px; padding: 5px 10px; }
+.transport .tc.seg { color: var(--text); }
+.row-btns.order { align-items: center; }
+.row-btns.order button { flex: 0 0 auto; }
+.order-pos { flex: 1; text-align: center; font-size: 12.5px; color: var(--muted); }

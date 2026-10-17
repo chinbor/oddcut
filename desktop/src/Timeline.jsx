@@ -2,14 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import Icon from './icons.jsx'
 
 // Bottom timeline: ruler + playhead, picture / sticker / drawn / music tracks, beat lines through all of them.
-// Wheel zooms around the pointer (Shift + wheel or a touchpad scrolls sideways). Click a clip to select it
-// (again to deselect); drag the line between clips to move a cut, which jumps onto the nearest beat while
+// Wheel zooms around the pointer (Shift + wheel or a touchpad scrolls sideways). Click a clip to select it and
+// play just that piece, drag it sideways to put it somewhere else (Esc cancels); click the ruler or empty space
+// to go back to the whole video; drag the line between clips to move a cut, which jumps onto the nearest beat while
 // 切点对齐节拍 is on (Alt = the other way round); drag a sticker bar's ends or its keyframe diamonds.
 
 const LABEL_W = 92
 const fmtS = (t) => (Number.isInteger(t) ? `${t}s` : `${t.toFixed(1)}s`)
 
-export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, onSelect, stickerName, styleName,
+export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot, aspect = 0.5625, wave, time, onSeek, selected, onSelect, stickerName, styleName,
                                    draft, onInOut, onCutMove, busy, pending, live, looks, keySel, onKeySelect, onKeyTime,
                                    metronome, setMetronome }) {
   const scroller = useRef(null)
@@ -19,6 +20,7 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
   const [zoomNote, setZoomNote] = useState(null)
   const [snap, setSnap] = useState(true)
   const [cutDrag, setCutDrag] = useState(null)
+  const [shotDrag, setShotDrag] = useState(null)   // a clip being dragged to a new place: {src, dx, dst}
   const zoomTimer = useRef(null)
   const zoomRef = useRef(1)                          // latest zoom, for wheel events that arrive faster than renders
   const duration = plan.duration
@@ -109,8 +111,9 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
     const r = el.getBoundingClientRect()
     return (clientX - r.left + el.scrollLeft - LABEL_W) / scale
   }
-  const scrub = (e) => {
+  const scrub = (e, deselect = false) => {
     e.preventDefault()
+    if (deselect) onSelect(null)
     const go = (ev) => onSeek(Math.min(duration - 0.01, Math.max(0, tAt(ev.clientX))))
     go(e)
     const up = () => { window.removeEventListener('pointermove', go); window.removeEventListener('pointerup', up) }
@@ -123,6 +126,51 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
     onSelect(i)
     const s = plan.shots[i]
     if (time < s.t_start || time >= s.t_end) onSeek(s.t_start + 0.01)
+  }
+  // picture clips: click = select + play that piece; drag sideways = move it (the others make room)
+  const clipDown = (e, i) => {
+    if (e.button !== 0) return
+    e.preventDefault(); e.stopPropagation()
+    const x0 = e.clientX
+    const centers = plan.shots.map((s) => (s.t_start + s.t_end) / 2)
+    let st = null
+    const mv = (ev) => {
+      const dx = ev.clientX - x0
+      if ((!st && Math.abs(dx) < 5) || busy) return
+      const tp = tAt(ev.clientX)
+      st = { src: i, dx, dst: centers.filter((c, j) => j !== i && c < tp).length }
+      setShotDrag(st)
+    }
+    const end = (keep) => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up)
+      window.removeEventListener('keydown', esc, true)
+      setShotDrag(null)
+      if (!st) { onSelect(i); onPlayShot(i) }
+      else if (keep && st.dst !== i) onMoveShot(i, st.dst)
+    }
+    const up = () => end(true)
+    const esc = (ev) => { if (ev.key === 'Escape') { ev.stopImmediatePropagation(); st = st || { src: i, dst: i }; end(false) } }
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
+    window.addEventListener('keydown', esc, true)
+  }
+  // while dragging: the dragged clip follows the pointer, the ones it passes slide over by its width
+  const dragW = shotDrag ? (plan.shots[shotDrag.src].t_end - plan.shots[shotDrag.src].t_start) * scale : 0
+  const offset = (j) => {
+    if (!shotDrag) return 0
+    const { src, dst, dx } = shotDrag
+    if (j === src) return dx
+    if (src < dst && j > src && j <= dst) return -dragW
+    if (dst < src && j >= dst && j < src) return dragW
+    return 0
+  }
+  const shift = (j) => (shotDrag ? { transform: `translateX(${offset(j)}px)` } : undefined)
+  const landAt = shotDrag ? (shotDrag.dst > shotDrag.src ? x(plan.shots[shotDrag.dst].t_end) - dragW
+                                                           : x(plan.shots[shotDrag.dst].t_start)) : 0
+  const filmstrip = (i, w) => {
+    const strip = strips?.[i]
+    if (!strip) return thumbs?.[i] ? [thumbs[i]] : []
+    const n = Math.min(4, Math.max(1, Math.round(w / (54 * aspect))))
+    return ({ 1: [thumbs?.[i] || strip[0]], 2: [strip[0], strip[2]], 3: [strip[0], strip[1], strip[3]], 4: strip })[n]
   }
   const startCut = (e, k) => {
     if (busy) return
@@ -214,9 +262,10 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
           <button className="fit" onClick={() => zoomTo(1)} disabled={zoom <= 1}>适应</button>
         </div>
       </div>
-      <div className="tl-scroll" ref={scroller}>
+      <div className="tl-scroll" ref={scroller}
+           onPointerDown={(e) => { if (e.target.classList.contains('track') || e.target.classList.contains('tl-inner')) onSelect(null) }}>
         <div className="tl-inner" style={{ width: LABEL_W + duration * scale + (zoom > 1 ? 20 : 8) }}>
-          <div className="tl-ruler" onPointerDown={scrub}>
+          <div className="tl-ruler" onPointerDown={(e) => scrub(e, true)} title="点这里回到整段播放">
             <span className="lab-pad" />
             {ticks.map((t) => <span key={t} className="tick" style={{ left: x(t) }}>{fmtS(t)}</span>)}
             {beats.filter((b) => b.down && b.bar > 0).map((b) => (
@@ -235,19 +284,25 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
 
           <div className="track video">
             <label><Icon name="film" size={16} />画面</label>
-            {plan.shots.map((s, i) => (
-              <div key={i} className={`clip ${selected === i ? 'sel' : ''} ${pending.includes(i) ? 'pending' : ''}`}
-                   style={{ left: x(s.t_start) + 1, width: Math.max(3, (s.t_end - s.t_start) * scale - 2),
-                            backgroundImage: thumbs?.[i] ? `url(${thumbs[i]})` : undefined }}
-                   onPointerDown={(e) => pick(i, e)} title={`镜头 ${i + 1} · ${(s.t_end - s.t_start).toFixed(1)} 秒`}>
-                <span className="num">{i + 1}</span>
-                {pending.includes(i) && <span className="gen">生成中</span>}
-              </div>
-            ))}
+            {plan.shots.map((s, i) => {
+              const w = Math.max(3, (s.t_end - s.t_start) * scale - 2)
+              return (
+                <div key={i} className={`clip ${selected === i ? 'sel' : ''} ${pending.includes(i) ? 'pending' : ''} ${shotDrag?.src === i ? 'lifted' : ''}`}
+                     style={{ left: x(s.t_start) + 1, width: w, ...shift(i) }}
+                     onPointerDown={(e) => clipDown(e, i)}
+                     title={`镜头 ${i + 1} · ${s.clip} · ${(s.t_end - s.t_start).toFixed(1)} 秒（点一下单独播放，左右拖动调换顺序）`}>
+                  <div className="strip">{filmstrip(i, w).map((src, k) => <img key={k} src={src} alt="" draggable={false} />)}</div>
+                  <span className="num">{i + 1}</span>
+                  {w > 54 && <span className="dur">{(s.t_end - s.t_start).toFixed(1)}s</span>}
+                  {pending.includes(i) && <span className="gen">生成中</span>}
+                </div>
+              )
+            })}
+            {shotDrag && <i className="insert-mark" style={{ left: landAt }} />}
             {plan.shots.slice(1).map((s, j) => {
               const cs = cutState(s.t_start)
               return (
-                <i key={`c${j}`} className={`cut ${busy ? 'off' : ''} ${cutDrag?.k === j + 1 ? 'dragging' : ''}`} style={{ left: x(s.t_start) - 5 }}
+                <i key={`c${j}`} className={`cut ${busy || shotDrag ? 'off' : ''} ${cutDrag?.k === j + 1 ? 'dragging' : ''}`} style={{ left: x(s.t_start) - 5 }}
                    onPointerDown={(e) => startCut(e, j + 1)} title={`${cs.text}。拖动可调整切点`}>
                   <b className={`cut-dot ${cs.on ? 'on' : ''}`} />
                 </i>
@@ -269,7 +324,7 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
               const keys = at?.keys || []
               return (
                 <div key={i} className={`bar ${s.sticker_at || d ? 'manual' : 'auto'} ${selected === i ? 'sel' : ''}`}
-                     style={{ left: x(s.t_start + tIn) + 1, width: Math.max(6, (tOut - tIn) * scale - 2) }}
+                     style={{ left: x(s.t_start + tIn) + 1, width: Math.max(6, (tOut - tIn) * scale - 2), ...shift(i) }}
                      onPointerDown={(e) => pick(i, e)} title={stickerName(s.sticker || id)}>
                   {d && <i className="edge l" onPointerDown={(e) => edge(e, i, 'in')} title="拖动改出现时间" />}
                   {img && <img src={img} alt="" />}
@@ -288,7 +343,7 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
             <label><Icon name="brush" size={16} />手绘</label>
             {plan.shots.map((s, i) => s.drawn && (
               <div key={i} className={`bar ${s.drawn.manual ? 'manual' : 'auto'} ${selected === i ? 'sel' : ''}`}
-                   style={{ left: x(s.t_start) + 1, width: Math.max(6, (s.t_end - s.t_start) * scale - 2) }}
+                   style={{ left: x(s.t_start) + 1, width: Math.max(6, (s.t_end - s.t_start) * scale - 2), ...shift(i) }}
                    onPointerDown={(e) => pick(i, e)} title={`手绘 · ${styleName(s.drawn.style)}`}>
                 <span>{styleName(s.drawn.style)}{s.drawn.manual ? ' ✎' : ''}</span>
                 <i className="reveal" style={{ left: s.drawn.reveal_at * scale }} title="在这里变回实拍（踩在重拍上）" />

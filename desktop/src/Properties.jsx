@@ -11,7 +11,7 @@ const MODES = [
 export default function Properties({ shot, index, thumb, looks, usableClips, draft, check, busy, onClose, onSwap,
                                      onRemoveSticker, onMode, onSize, onSizeCommit, onDrawn, onStyle, onForceDrawn,
                                      onBoxMode, stickerName, keyAt, onPrevKey, onToggleKey, onNextKey, recordArmed,
-                                     onRecordArm }) {
+                                     onRecordArm, onMoveShot, shotCount }) {
   const [pickClip, setPickClip] = useState(false)
   const len = shot.t_end - shot.t_start
   const sid = shot.sticker ? shot.sticker.split('@')[0] : null
@@ -37,6 +37,11 @@ export default function Properties({ shot, index, thumb, looks, usableClips, dra
         <div className="row-btns">
           <button disabled={busy} onClick={() => onSwap()}><Icon name="refresh" size={16} />换一个素材</button>
           <button disabled={busy} onClick={() => setPickClip((v) => !v)}>从素材里挑…</button>
+        </div>
+        <div className="row-btns order">
+          <button disabled={busy || index === 0} onClick={() => onMoveShot(-1)} title="和前一个镜头换位置（切点会重新对齐节拍）"><Icon name="prev" size={16} />左移</button>
+          <span className="order-pos">第 {index + 1} / {shotCount} 个</span>
+          <button disabled={busy || index === shotCount - 1} onClick={() => onMoveShot(1)} title="和后一个镜头换位置（切点会重新对齐节拍）">右移<Icon name="next" size={16} /></button>
         </div>
         {pickClip && (
           <div className="clip-pick">

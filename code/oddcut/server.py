@@ -11,7 +11,7 @@ With --parent-pid it exits when that process (the desktop app) goes away.
     GET  /api/templates              styles to pick from
     GET  /api/aspects                output aspect presets
     GET  /api/looks                  stickers and drawn styles to pick from, with small preview pictures
-    GET  /api/thumbs?plan=P          a small picture of every shot (timeline video track)
+    GET  /api/thumbs?plan=P          a small picture of every shot + a 4-frame filmstrip of each (timeline)
     GET  /api/still?plan=P&index=I&t=S   one frame of shot I, S seconds in, cropped to the output aspect
     GET  /api/waveform?plan=P        the song under the plan: peaks per 20 ms + beat grid (timeline music track)
     POST /api/track {plan, index, place}   path of a sticker being placed (per frame, 0..1), right away
@@ -60,7 +60,7 @@ from pathlib import Path
 from . import __version__
 from .formats import ASPECTS
 from .paths import OUTPUT_DIR, PROJECT_ROOT, TEMPLATE_DIR
-from .pipeline import (KEEP, Options, analyze, carry_manual, edit_shot, has_manual, load_analysis, load_plan, move_cut,
+from .pipeline import (KEEP, Options, analyze, carry_manual, edit_shot, has_manual, load_analysis, load_plan, move_cut, move_shot,
                        plan, render_plan, replace_shot, retime, save_analysis, save_plan, with_music)
 from .progress import ProgressEvent
 
@@ -280,6 +280,15 @@ def run_cut(job: Job) -> dict:
     return _plan_result(pl, out, notes)
 
 
+def run_move(job: Job) -> dict:
+    p = job.params
+    plan_path = _path(p["plan"])
+    pl, notes = move_shot(load_analysis(_path(p["analysis"])), load_plan(plan_path), int(p["src"]), int(p["dst"]))
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return _plan_result(pl, out, notes)
+
+
 def run_retime(job: Job) -> dict:
     p = job.params
     analysis_path = _path(p["analysis"])
@@ -335,11 +344,22 @@ def frame_at(clip: str, t: float, aspect: float, height: int) -> str:
     return _FRAMES[key]
 
 
-def plan_thumbs(plan_path: Path) -> list[str]:
+STRIP = (0.12, 0.37, 0.62, 0.87)   # where in a shot the timeline filmstrip frames come from
+
+
+def plan_thumbs(plan_path: Path) -> dict:
+    """A small picture of every shot, plus a filmstrip of 4 frames across it (the timeline shows as many as fit)."""
+    from concurrent.futures import ThreadPoolExecutor
+
     from .formats import output_size
     pl = load_plan(plan_path)
     w, h = output_size(pl.template)
-    return [frame_at(s.clip.path, s.src_start + 0.1, w / h, 96) for s in pl.shots]
+    jobs = [(s.clip.path, s.src_start + 0.1) for s in pl.shots]
+    jobs += [(s.clip.path, s.src_start + f * (s.t_end - s.t_start)) for s in pl.shots for f in STRIP]
+    with ThreadPoolExecutor(8) as ex:
+        pics = list(ex.map(lambda j: frame_at(j[0], j[1], w / h, 96), jobs))
+    n = len(pl.shots)
+    return {"thumbs": pics[:n], "strips": [pics[n + 4 * i:n + 4 * i + 4] for i in range(n)]}
 
 
 def plan_still(plan_path: Path, index: int, t: float) -> dict:
@@ -444,7 +464,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "retime": run_retime, "live": run_live}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None
@@ -559,7 +579,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, {"songs": songs})
                 plan_path = _path(q["plan"])
                 if parts[1] == "thumbs":
-                    return self._send(200, {"thumbs": plan_thumbs(plan_path)})
+                    return self._send(200, plan_thumbs(plan_path))
                 if parts[1] == "still":
                     return self._send(200, plan_still(plan_path, int(q["index"]), float(q.get("t", 0))))
                 return self._send(200, plan_waveform(plan_path))

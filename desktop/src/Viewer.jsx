@@ -29,7 +29,7 @@ function rdp(pts, eps) {
 export default function Viewer({ src, videoRef, time, onTime, playing, setPlaying, duration, fps, aspect, shot,
                                  draft, track, stickerImage, showImage, autoSticker, keySel, onSelectKey, onDraft,
                                  onMoveKey, onCommit, onDeleteKey, onStillKey, onPlaceAuto, onDropSticker, recordArmed,
-                                 onRecorded, boxMode, onBox, status, wave }) {
+                                 onRecorded, boxMode, onBox, status, wave, segment, loop, setLoop }) {
   const boxRef = useRef(null)
   const [aw, ah] = aspect
   const keep = useRef({ t: 0, playing: false })
@@ -70,15 +70,33 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     const v = videoRef.current
     if (v && !playing && Math.abs(v.currentTime - time) > 0.02) v.currentTime = time
   }, [time, playing])
+  // a selected shot plays on its own: stop on its last frame, or go round again with 循环
+  const seg = useRef(null)
+  seg.current = segment ? { ...segment, loop } : null
   useEffect(() => {
     if (!playing) return
     let id
-    const tick = () => { if (videoRef.current) onTime(videoRef.current.currentTime); id = requestAnimationFrame(tick) }
+    const tick = () => {
+      const v = videoRef.current
+      const s = seg.current
+      if (v && s && v.currentTime >= s.end - 0.5 / fps) {
+        if (s.loop) v.currentTime = s.start + 0.001
+        else { v.pause(); v.currentTime = s.end - 1 / fps }
+      }
+      if (v) onTime(v.currentTime)
+      id = requestAnimationFrame(tick)
+    }
     id = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(id)
   }, [playing])
 
-  const toggle = () => { const v = videoRef.current; if (v) (v.paused ? v.play() : v.pause()) }
+  const toggle = () => {
+    const v = videoRef.current
+    if (!v) return
+    if (!v.paused) return v.pause()
+    if (segment && (v.currentTime < segment.start - 1e-3 || v.currentTime >= segment.end - 1.5 / fps)) v.currentTime = segment.start + 0.001
+    v.play()
+  }
   const step = (n) => {
     const v = videoRef.current
     if (v && !v.paused) v.pause()
@@ -287,11 +305,19 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
       </div>
       <div className="transport">
         <button className="icon" onClick={() => step(-1)} title="上一帧（←）"><Icon name="prev" /></button>
-        <button className="play" onClick={toggle} title={playing ? '暂停（空格）' : '播放（空格）'} disabled={!src}>
+        <button className="play" onClick={toggle} title={playing ? '暂停（空格）' : segment ? `播放片段 ${segment.n}（空格）` : '播放（空格）'} disabled={!src}>
           <Icon name={playing ? 'pause' : 'play'} size={24} fill />
         </button>
         <button className="icon" onClick={() => step(1)} title="下一帧（→）"><Icon name="next" /></button>
-        <span className="tc">{fmt(time)} / {fmt(duration)}</span>
+        {segment && (
+          <button className={`toggle loop ${loop ? 'on' : ''}`} onClick={() => setLoop((l) => !l)} aria-pressed={loop}
+                  title="循环播放选中的这一段"><Icon name="refresh" size={16} />循环</button>
+        )}
+        <span className={`tc ${segment ? 'seg' : ''}`}>
+          {segment
+            ? <>片段 {segment.n} · {Math.min(Math.max(0, time - segment.start), segment.end - segment.start).toFixed(1)} / {(segment.end - segment.start).toFixed(1)}s</>
+            : <>{fmt(time)} / {fmt(duration)}</>}
+        </span>
       </div>
     </div>
   )

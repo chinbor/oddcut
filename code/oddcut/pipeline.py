@@ -471,6 +471,65 @@ def move_cut(analysis: Analysis, p: Plan, k: int, t: float, snap: bool = True) -
     return replace(p, shots=shots, looks={**p.looks, "edited_cuts": True}), []
 
 
+def move_shot(analysis: Analysis, p: Plan, src: int, dst: int) -> tuple[Plan, list[str]]:
+    """Move shot `src` to position `dst` (as in a timeline drag). Every shot keeps its footage (clip and start
+    in it), its sticker and drawing; the shots are laid end to end in the new order and each cut then goes to
+    the nearest beat (at least MIN_SHOT per shot, never past the end of a clip, drawn shots keep room to draw,
+    the total length is unchanged). Drawn shots reveal on the strongest beat near where they did before."""
+    n = len(p.shots)
+    if not (0 <= src < n and 0 <= dst < n):
+        raise IndexError(f"shot {src} -> {dst} out of range (plan has {n})")
+    if src == dst:
+        return p, []
+    fps = float(p.template["output"]["fps"])
+    grid, strength = analysis.music.grid, analysis.music.strength
+    shots = [replace(s) for s in p.shots]
+    s = shots.pop(src)
+    shots.insert(dst, s)
+    total = p.shots[-1].t_end
+    lens = [x.t_end - x.t_start for x in shots]
+    # cuts: nominal = shots end to end with their own lengths, then the nearest allowed beat
+    cuts, prev, nominal = [], 0.0, 0.0
+    for i in range(1, n):
+        nominal += lens[i - 1]
+        a = shots[i - 1]
+        lo = prev + MIN_SHOT
+        hi = total - MIN_SHOT * (n - i)
+        if a.drawn:                                    # room to draw, reveal and show the tail
+            rs, tail = _drawn_cfg(p.template, i - 1)
+            lo = max(lo, prev + min(lens[i - 1], 0.6 + rs + tail))
+        clip_a = _clip_len(analysis, a.clip.path)
+        if clip_a is not None:                         # can't show more of a clip than there is
+            hi = min(hi, prev + (clip_a - a.src_start) - 0.05)
+        hi = max(hi, lo)
+        cand = grid[(grid >= lo - 1e-6) & (grid <= hi + 1e-6)]
+        t = float(cand[np.argmin(np.abs(cand - nominal))]) if len(cand) else min(max(nominal, lo), hi)
+        cuts.append(t)
+        prev = t
+    bounds = [0.0] + cuts + [total]
+    notes = []
+    for i, x in enumerate(shots):
+        x.t_start, x.t_end = bounds[i], bounds[i + 1]
+        x.frames = _frames_between(x.t_start, x.t_end, fps)
+        if x.role in ("hook", "outro", "body"):        # opening / closing roles belong to positions
+            x.role = "hook" if i == 0 else ("outro" if i == n - 1 else "body")
+        if x.drawn:
+            rs, tail = _drawn_cfg(p.template, i)
+            want = x.t_start + x.drawn["reveal_at"]
+            m = (grid >= x.t_start + 0.6) & (grid <= x.t_end - rs - tail)
+            reveal = float(grid[m][np.argmax(strength[m] - 0.3 * np.abs(grid[m] - want))]) if m.any() else None
+            if reveal is None:
+                x.drawn = None
+                x.role = "hook" if i == 0 else ("outro" if i == n - 1 else "body")
+                notes.append(f"镜头 {i + 1} 移动后太短，放不下手绘，已改成普通镜头")
+            else:
+                x.drawn = {**x.drawn, "reveal_at": round(reveal - x.t_start, 3)}
+                _retail(x, rs)
+        if x.sticker_at and x.sticker_at.get("out") is not None:
+            x.sticker_at = {**x.sticker_at, "out": min(float(x.sticker_at["out"]), x.t_end - x.t_start)}
+    return replace(p, shots=shots, looks={**p.looks, "edited_cuts": True}), notes
+
+
 def retime(analysis: Analysis, p: Plan) -> tuple[Plan, list[str]]:
     """Keep this edit (shots, footage, stickers, drawings) but put it on another song: every cut snaps to the
     nearest beat of the new song, drawn shots reveal on its strongest beat, the music reference changes."""

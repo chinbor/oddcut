@@ -44,6 +44,8 @@ export default function App() {
   const [playing, setPlaying] = useState(false)
   const [selected, setSelected] = useState(null)
   const [thumbs, setThumbs] = useState(null)
+  const [strips, setStrips] = useState(null)            // 4 frames across each shot, for the timeline filmstrip
+  const [loop, setLoop] = useState(false)               // loop the selected shot while it plays
   const [wave, setWave] = useState(null)
   const [draft, setDraft] = useState(null)              // working copy of the selected shot's hand-placed sticker
   const [track, setTrack] = useState(null)
@@ -153,8 +155,7 @@ export default function App() {
   }, [startLive])
   useEffect(() => {
     if (!plan) return
-    setThumbs(null)
-    vc.api('GET', `/api/thumbs?plan=${q(plan.plan)}`).then((r) => setThumbs(r.thumbs)).catch(() => {})
+    vc.api('GET', `/api/thumbs?plan=${q(plan.plan)}`).then((r) => { setThumbs(r.thumbs); setStrips(r.strips) }).catch(() => {})
     vc.api('GET', `/api/waveform?plan=${q(plan.plan)}`).then(setWave).catch(() => {})
   }, [plan?.plan])
 
@@ -195,6 +196,28 @@ export default function App() {
   const applyShot = guard(async (index, change) => commit(await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, ...change })))
   const swapShot = guard(async (index, clip) => commit(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip })))
   const moveCut = guard(async (k, t, snap) => commit(await runJob({ kind: 'cut', analysis: analysis.analysis, plan: plan.plan, k, t, snap })))
+  // reorder: the shot keeps its footage and effects, the cuts re-snap to the beats
+  const moveShot = guard(async (src, dst) => {
+    if (src === dst || dst < 0 || dst >= plan.shots.length) return
+    const r = await runJob({ kind: 'move', analysis: analysis.analysis, plan: plan.plan, src, dst })
+    const perm = (a) => { if (!a) return a; const b = [...a]; const [x] = b.splice(src, 1); b.splice(dst, 0, x); return b }
+    setThumbs(perm); setStrips(perm)                    // right away; fresh ones follow
+    commit(r)
+    setSelected(dst)
+    setTime(r.shots[dst].t_start + 0.001)
+  })
+
+  // ---- the selected shot plays on its own (click a clip = play just that piece)
+  const playShot = (i) => {
+    const s = plan.shots[i]
+    const v = videoRef.current
+    setTime(s.t_start + 0.001)
+    if (!v) return
+    v.currentTime = s.t_start + 0.001
+    v.play().catch(() => {})
+  }
+  const segment = plan && selected != null && plan.shots[selected]
+    ? { start: plan.shots[selected].t_start, end: plan.shots[selected].t_end, n: selected + 1 } : null
 
   const placeSticker = (i, id, x, y) => {
     setSelected(i)
@@ -485,7 +508,7 @@ export default function App() {
               onDraft={editDraft} onCommit={commitDraft} onDropSticker={dropSticker} boxMode={boxMode}
               showImage={draftDirty || !previewSrc || (live?.pending || []).includes(selected)} keySel={keySel} onSelectKey={setKeySel}
               onMoveKey={moveKey} onDeleteKey={deleteKey} onStillKey={stillKey} onPlaceAuto={placeAuto}
-              recordArmed={recordArmed} onRecorded={onRecorded} wave={wave}
+              recordArmed={recordArmed} onRecorded={onRecorded} wave={wave} segment={recordArmed ? null : segment} loop={loop} setLoop={setLoop}
               onBox={(b) => { setBoxMode(false); drawShot(selected, shot.drawn?.style || 'lineart', b) }}
               status={live?.starting ? '正在生成预览…' : null} />
 
@@ -494,6 +517,7 @@ export default function App() {
                     usableClips={analysis ? analysis.clips.filter((c) => !c.rejected) : []}
                     draft={myDraft && { ...myDraft, curSize }} check={check && check.index === selected ? check : null} busy={busy}
                     onClose={() => setSelected(null)} onSwap={(clip) => swapShot(selected, clip)}
+                    onMoveShot={(d) => moveShot(selected, selected + d)} shotCount={plan.shots.length}
                     onRemoveSticker={() => applyShot(selected, { sticker: null })}
                     onMode={(mode) => { const { index, ...place } = myDraft; applyShot(selected, { sticker: { ...place, mode } }) }}
                     onSize={(v) => editDraft({ size: v })} onSizeCommit={commitDraft}
@@ -505,8 +529,8 @@ export default function App() {
                     recordArmed={recordArmed} onRecordArm={() => setRecordArmed((v) => !v)} />
       )}
 
-      <Timeline plan={plan} thumbs={thumbs} wave={wave} time={time} onSeek={setTime} selected={selected}
-                onSelect={setSelected} stickerName={stickerName} styleName={styleName} draft={myDraft} onInOut={onInOut}
+      <Timeline plan={plan} thumbs={thumbs} strips={strips} wave={wave} time={time} onSeek={setTime} selected={selected}
+                onSelect={setSelected} onPlayShot={playShot} onMoveShot={moveShot} aspect={aw / ah} stickerName={stickerName} styleName={styleName} draft={myDraft} onInOut={onInOut}
                 onCutMove={moveCut} busy={busy} pending={live?.pending || []} live={live} looks={looks}
                 keySel={keySel} onKeySelect={setKeySel} onKeyTime={keyTime} metronome={metronome} setMetronome={setMetronome} />
       {toastsEl}
