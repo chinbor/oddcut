@@ -8,6 +8,8 @@ real footage.
             zig-zag marker front and a crayon texture (streaks + paper tooth), under the lines
     reveal  the real frame dissolves in: subject first, then background, lines fade last. The real frame
             is frozen on the start frame until the reveal ends, then playback resumes.
+    styles  lineart (above), marker (thick diagonal marker strokes over a pale base), pencil (graphite
+            lines and tonal hatching on a paper sheet), watercolor (washes that bloom in, dark rims)
 
     python -m oddcut.drawn_reveal --clip assets/public/clips/22732-720.mp4 --start 0.25 --out output/drawn/22732_cat.mp4
 
@@ -641,7 +643,7 @@ def build_strokes(frame: np.ndarray, s: Subject, scale: float, seed: int = 0) ->
 
 
 def draw_lines(strokes: list[Stroke], progress: float, size: tuple[int, int], boil: int,
-               boil_amp: float, gap: float) -> Image.Image:
+               boil_amp: float, gap: float, ink=INK) -> Image.Image:
     """Line layer (RGBA, output size) with the first `progress` (0..1) of the total pen path drawn."""
     W, H = size
     img = Image.new("RGBA", (W * SS, H * SS), (0, 0, 0, 0))
@@ -668,9 +670,9 @@ def draw_lines(strokes: list[Stroke], progress: float, size: tuple[int, int], bo
             w = np.maximum(w, st.width * SS * np.clip(np.arange(k)[::-1] / 6.0, 0, 1) * 0.9)
         for i in range(k):
             r = w[i] / 2
-            d.ellipse([q[i, 0] - r, q[i, 1] - r, q[i, 0] + r, q[i, 1] + r], fill=INK + (255,))
+            d.ellipse([q[i, 0] - r, q[i, 1] - r, q[i, 0] + r, q[i, 1] + r], fill=tuple(ink) + (255,))
             if i < k - 1:
-                d.line([tuple(q[i]), tuple(q[i + 1])], fill=INK + (255,), width=max(1, int(round(w[i]))))
+                d.line([tuple(q[i]), tuple(q[i + 1])], fill=tuple(ink) + (255,), width=max(1, int(round(w[i]))))
     return img.resize((W, H), Image.LANCZOS)
 
 
@@ -870,6 +872,82 @@ def crayon_texture(H: int, W: int, rng) -> tuple[np.ndarray, np.ndarray]:
     return 1 + 0.06 * np.clip(streak, -2.5, 2.5), tooth
 
 
+# ----------------------------------------------------------------------------- drawing styles
+
+def _hatch(H: int, W: int, period: float, angle: float, width: float, rng, seg: float = 0.0) -> np.ndarray:
+    """Parallel hand-drawn strokes (0..1 coverage, soft edges): `period` px apart, `width` = share of the
+    period they cover, at `angle` degrees. Edges wander a little; with `seg` > 0 the strokes break
+    into pieces about that long, like separate pen strokes."""
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    a = math.radians(angle)
+    u = (xx * math.cos(a) + yy * math.sin(a)) / period
+    u = u + 0.12 * _noise((H, W), 2.5 * period, rng)
+    k = np.floor(u)
+    d = np.abs((u - k) - 0.5)
+    soft = 0.6 / period + 0.04
+    m = np.clip((width / 2 - d) / soft + 0.5, 0, 1)
+    if seg > 0:
+        v = -xx * math.sin(a) + yy * math.cos(a)
+        off = ((k * 0.6180339) % 1.0) * seg
+        gap = ((v + off) % seg) < 0.12 * seg
+        m[gap] = 0.0
+    return m
+
+
+def _style_setup(style: str, frame0: np.ndarray, region: np.ndarray, owner: np.ndarray, regions, paper,
+                 H: int, W: int, rng) -> dict:
+    """What a drawing style changes: line ink / width / texture and how the colour is put down."""
+    if style == "lineart":
+        return {}
+    flat = np.zeros((H, W, 3), np.float32)
+    for i, r in enumerate(regions):
+        if r.order < 1e9:
+            flat[owner == i] = r.color
+    if style == "marker":                     # 斜向粗笔: thick diagonal marker / oil-pastel strokes
+        p = 0.028 * W
+        h1 = _hatch(H, W, p, -52, 0.78, rng, seg=0.22 * W)
+        h2 = _hatch(H, W, p, -48, 0.30, rng, seg=0.15 * W)
+        h2 = np.roll(h2, int(0.5 * p), axis=1)
+        cover = np.maximum(h1, h2)
+        overlap = np.minimum(h1, h2)
+        streak = 1 + 0.05 * _noise((H, W), 0.004 * W, rng)
+        rgb = flat * (1 - 0.16 * overlap[..., None]) * streak[..., None]
+        # a pale first pass of the same colour under the strokes, so the gaps aren't the busy scene
+        base = 0.55 * flat + 0.45 * np.array(PAPER, np.float32)
+        return dict(ink=(28, 24, 22), width=2.1, fill_rgb=rgb, cover=cover, base_rgb=base, base_alpha=0.7)
+    if style == "pencil":                     # 铅笔素描: graphite outlines + tonal hatching
+        g = cv2.GaussianBlur(cv2.cvtColor(frame0, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0, (0, 0), 0.004 * W)
+        lo, hi = np.percentile(g[region], [5, 95]) if region.any() else (0.0, 1.0)
+        tone = np.clip((g - lo) / max(1e-3, hi - lo), 0, 1)
+        p = 0.011 * W
+        dark = np.zeros((H, W), np.float32)
+        for ang, thr, per, s in ((38, 0.80, p, 0.42), (-52, 0.55, p, 0.40), (82, 0.30, 0.8 * p, 0.38)):
+            h = _hatch(H, W, per, ang, 0.34, rng, seg=0.09 * W) * np.clip((thr - tone) / 0.12, 0, 1)
+            dark = 1 - (1 - dark) * (1 - s * h)
+        grain = np.clip(0.75 + 0.25 * _noise((H, W), 0.8, rng), 0.3, 1.0)
+        # sketched on a sheet of paper laid over the subject, so the graphite reads on any scene
+        sheet = np.broadcast_to(np.array(PAPER, np.float32), (H, W, 3)) * (1 + 0.02 * _noise((H, W), 0.8, rng))[..., None]
+        return dict(ink=(62, 62, 68), width=0.9, line_alpha=grain[..., None], mono=True,
+                    fill_rgb=np.full((H, W, 3), (58, 58, 64), np.float32), cover=0.9 * dark * grain,
+                    base_rgb=sheet, base_alpha=0.93)
+    if style == "watercolor":                 # 水彩晕染: diluted washes that bloom in, dark pigment rims
+        wash = 0.66 * flat + 0.34 * paper
+        soft = cv2.GaussianBlur(region.astype(np.float32), (0, 0), 0.004 * W)
+        rim = np.clip(soft - cv2.GaussianBlur(soft, (0, 0), 0.02 * W), 0, 1)
+        rim = rim / max(1e-6, rim.max())
+        gran = 1 - 0.06 * np.clip(_noise((H, W), 1.2, rng), -2, 2) - 0.05 * _noise((H, W), 0.03 * W, rng)
+        rgb = wash * (1 - 0.30 * rim[..., None]) * gran[..., None]
+        out_d = cv2.distanceTransform((~region).astype(np.uint8), cv2.DIST_L2, 5)
+        reach = 0.012 * W * (0.7 + 0.3 * np.clip(_noise((H, W), 0.01 * W, rng), -1, 1))   # ragged edge
+        bleed = np.clip(1 - out_d / reach, 0, 1)
+        grow = 0.6 * _noise((H, W), 0.05 * W, rng) + 0.4 * _noise((H, W), 0.012 * W, rng)
+        grow = (grow - grow.min()) / (np.ptp(grow) + 1e-6)
+        # the bleed outside the subject only arrives at the very end, after the wash inside it
+        return dict(ink=(96, 66, 48), width=0.75, line_alpha=0.78, fill_rgb=rgb, grow=grow,
+                    wash_area=np.maximum(region.astype(np.float32), 0.85 * bleed))
+    raise ValueError(f"unknown drawn style {style!r}")
+
+
 # ----------------------------------------------------------------------------- render
 
 def _ease_out(x: float, p: float = 1.35) -> float:
@@ -967,6 +1045,13 @@ def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, tim
     field_bg = 0.35 * nf + 0.65 * np.sqrt(dist)
     field_bg = (field_bg - field_bg.min()) / (np.ptp(field_bg) + 1e-6)
 
+    look = _style_setup(style, frames_out[0], region, owner, regions, paper, H, W, rng)
+    if look.get("width", 1.0) != 1.0:        # thicker / thinner pen for this style
+        strokes = [Stroke(st.pts, st.width * look["width"], st.kind, st.length,
+                          None if st.widths is None else st.widths * look["width"]) for st in strokes]
+    ink = look.get("ink", INK)
+    line_alpha = look.get("line_alpha", 1.0)
+
     n_line = max(1, round(tm.line * fps))
     n_color = max(1, round(tm.color * fps))
     n_hold = round(tm.hold * fps)
@@ -982,8 +1067,9 @@ def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, tim
         key = (round(progress, 4), boil)
         if key not in line_cache:
             line_cache.clear()
-            img = np.asarray(draw_lines(strokes, progress, (W, H), boil, boil_amp, gap), np.float32)
-            line_cache[key] = (img[..., :3], img[..., 3:] / 255.0)
+            img = np.asarray(draw_lines(strokes, progress, (W, H), boil, boil_amp, gap, ink), np.float32)
+            al = img[..., 3:] / 255.0 * line_alpha
+            line_cache[key] = (img[..., :3], al)
         return line_cache[key]
 
     def fill_alpha(f: float) -> np.ndarray:
@@ -1015,10 +1101,22 @@ def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, tim
         out = paper.copy()
         if fill_f > 0:
             a = fill_alpha(fill_f) * fade
-            a = a * np.clip(1.15 + 0.25 * edge_n, 0, 1)       # crayon doesn't cover perfectly
-            out = out * (1 - a[..., None]) + fill_rgb * a[..., None]
+            if "grow" in look:                 # watercolour: washes bloom in from noisy fronts
+                g = np.clip((fill_f * 1.25 - look["grow"]) / 0.18, 0, 1)
+                a = 0.92 * g * g * (3 - 2 * g) * look["wash_area"] * np.where(region, 1.0, min(1.0, fill_f * 1.6 - 0.6))
+                a = a * fade
+            elif "cover" in look:              # hatched styles: colour only where the strokes are
+                if "base_rgb" in look:
+                    ab = (a * look["base_alpha"])[..., None]
+                    out = out * (1 - ab) + look["base_rgb"] * ab
+                a = a * look["cover"]
+            else:
+                a = a * np.clip(1.15 + 0.25 * edge_n, 0, 1)       # crayon doesn't cover perfectly
+            out = out * (1 - a[..., None]) + look.get("fill_rgb", fill_rgb) * a[..., None]
             for r, cov in feat_layers:
                 col = r.color[None, None, :] * shade[..., None]
+                if look.get("mono"):
+                    col = np.repeat(col.mean(axis=2, keepdims=True) * 0.55, 3, axis=2)
                 out = out * (1 - cov[..., None]) + col * cov[..., None]
         if base is not None:
             ar = np.where(region, real_sub, real_bg)[..., None]
@@ -1198,13 +1296,16 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--background", choices=["real", "paper"], default="real",
                     help="real: draw only the subject on the real scene; paper: whole frame is paper")
+    ap.add_argument("--style", default="lineart", choices=["lineart", "marker", "pencil", "watercolor"],
+                    help="drawing style (see looks.DRAWN_STYLES)")
     a = ap.parse_args()
     from .formats import parse_aspect, resolution_for
     aw, ah = parse_aspect(a.aspect)
     height = a.height or resolution_for(a.aspect)[1]
     timing = Timing(a.line, a.color, a.reveal, a.tail, a.reveal_at)
     stats = run(a.clip, a.start, Path(a.out), timing, check=not a.force, seed=a.seed,
-                out_height=None if a.native else height, k=a.colors, background=a.background, aspect=aw / ah)
+                out_height=None if a.native else height, k=a.colors, background=a.background, aspect=aw / ah,
+                style=a.style)
     print(json.dumps(stats, ensure_ascii=False, indent=1))
 
 

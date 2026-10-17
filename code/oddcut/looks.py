@@ -23,6 +23,9 @@ LEGACY_STICKERS = ("eyes", "anger", "question")   # what a plan uses when no sel
 
 DRAWN_STYLES = [
     dict(id="lineart", name="线稿上色", description="细线勾出主体，平涂上色，再渐变成实拍"),
+    dict(id="marker", name="斜向粗笔", description="粗马克笔 / 油画棒斜向排线上色，笔触明显"),
+    dict(id="pencil", name="铅笔素描", description="灰色铅笔线稿，按明暗排线打阴影"),
+    dict(id="watercolor", name="水彩晕染", description="淡彩一团团晕开，边缘积色，带纸纹"),
 ]
 DEFAULT_DRAWN_STYLE = "lineart"
 

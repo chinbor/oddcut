@@ -1,4 +1,5 @@
 """Render the planned shots: per-shot trim + crop to the output aspect + grade, concat, then lay the music under it."""
+import functools
 import hashlib
 import json
 import os
@@ -22,6 +23,19 @@ PREVIEW_SHORT_SIDE = 360   # preview renders: 9:16 -> 360x640
 def preview_size(w: int, h: int) -> tuple[int, int]:
     k = PREVIEW_SHORT_SIDE / min(w, h)
     return max(2, int(round(w * k / 2)) * 2), max(2, int(round(h * k / 2)) * 2)
+
+
+# the code that draws each kind of effect shot: part of the cache key, so editing it never reuses stale shots
+_EFFECT_CODE = {"sticker": ("stickers.py",), "cartoon": ("stickers.py", "cartoons.py"), "drawn": ("drawn_reveal.py",)}
+
+
+@functools.lru_cache(maxsize=None)
+def effect_rev(kind: str) -> str:
+    """Hash of the drawing code for an effect kind (line endings ignored)."""
+    h = hashlib.sha1()
+    for name in _EFFECT_CODE[kind]:
+        h.update(Path(__file__).with_name(name).read_bytes().replace(b"\r\n", b"\n"))
+    return h.hexdigest()[:12]
 
 
 def _effect_key(*parts) -> str:
@@ -111,10 +125,10 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
         if s.drawn:
             style = s.drawn.get("style", "lineart")
             params = ("drawn", s.src_start, s.drawn["reveal_at"], s.drawn["tail"] + 0.15, background, full_w, full_h)
-            if style != "lineart":                  # keeps the cache keys of line-art shots rendered before
-                params += (style,)
+            params += (style, effect_rev("drawn"))
         else:
-            params = ("sticker", s.src_start, s.frames / fps + 0.3, s.sticker, full_w, full_h)
+            params = ("sticker", s.src_start, s.frames / fps + 0.3, s.sticker, full_w, full_h,
+                      effect_rev("cartoon" if "@" in s.sticker else "sticker"))
         cached = effects_cache / f"{_effect_key(s.clip.path, *params)}.mp4" if effects_cache else None
         if cached is not None and cached.exists():
             sources[i] = (str(cached), 0.0)
