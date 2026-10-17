@@ -4,6 +4,7 @@
 const { app, BrowserWindow, dialog, ipcMain, protocol, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const readline = require('node:readline')
 const { Readable } = require('node:stream')
@@ -39,6 +40,8 @@ function startBackend() {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
+    // renders run below normal priority (ffmpeg children inherit it on Windows), so the editor stays smooth
+    try { os.setPriority(proc.pid, os.constants.priority.PRIORITY_BELOW_NORMAL) } catch {}
     let stderr = ''
     proc.stderr.on('data', (d) => {
       stderr = (stderr + d.toString()).slice(-4000)

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import Icon from './icons.jsx'
 
 // Bottom timeline: ruler + playhead, picture / sticker / drawn / music tracks, beat lines through all of them.
@@ -236,36 +237,53 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
 
   // picture-in-picture lanes: drag a clip in time and between lanes, its ends to trim; beats pull like cuts do
   const LANE_H = 32
+  // magnetic: a beat pulls only when the pointer is within a few pixels of it, so the clip follows the mouse
   const snapT = (tt, ev, lo = 0, hi = duration) => {
     if (snap === ev.altKey || !beats.length) return tt
     const b = beats.reduce((m, v) => (Math.abs(v.t - tt) < Math.abs(m.t - tt) ? v : m), beats[0])
-    return b.t >= lo && b.t <= hi && Math.abs(b.t - tt) < 0.35 ? b.t : tt
+    return b.t >= lo && b.t <= hi && Math.abs(b.t - tt) * scale < 8 ? b.t : tt
   }
+  // the bar itself moves while dragging (once per frame); the edit is handed over when let go
   const ovDrag = (e, o, what) => {
-    if (busy || e.button !== 0) return
+    if (e.button !== 0) return                  // allowed while an edit runs: the drop waits for it
     e.preventDefault(); e.stopPropagation()
     onSelectOverlay(o.id)
+    const bar = what === 'body' ? e.currentTarget : e.currentTarget.parentElement
     const x0 = e.clientX, y0 = e.clientY
     const len = o.t_end - o.t_start
     const clipLen = clipInfo?.(o.clip)?.duration ?? (o.src_start + len)
-    let moved = false
-    const mv = (ev) => {
-      moved = true
+    let patch = null, last = null, id = 0
+    const css = bar.style.cssText
+    bar.classList.add('dragging')
+    const step = () => {
+      id = 0
+      const ev = last
       if (what === 'body') {
         let t0 = Math.min(duration - len, Math.max(0, o.t_start + (ev.clientX - x0) / scale))
         t0 = snapT(t0, ev, 0, duration - len)
         const track = Math.min(2, Math.max(0, o.track - Math.round((ev.clientY - y0) / LANE_H)))
-        onOverlayDraft(o.id, { t_start: t0, t_end: t0 + len, track })
+        patch = { t_start: t0, t_end: t0 + len, track }
+        bar.style.transform = `translate(${(t0 - o.t_start) * scale}px, ${(o.track - track) * LANE_H}px)`
       } else if (what === 'in') {
         const lo = Math.max(0, o.t_start - o.src_start), hi = o.t_end - 0.3
         const t0 = snapT(Math.min(hi, Math.max(lo, tAt(ev.clientX))), ev, lo, hi)
-        onOverlayDraft(o.id, { t_start: t0, src_start: o.src_start + (t0 - o.t_start) })
+        patch = { t_start: t0, src_start: o.src_start + (t0 - o.t_start) }
+        bar.style.left = `${x(t0) + 1}px`; bar.style.width = `${Math.max(8, (o.t_end - t0) * scale - 2)}px`
       } else {
         const lo = o.t_start + 0.3, hi = Math.min(duration, o.t_start + clipLen - o.src_start)
-        onOverlayDraft(o.id, { t_end: snapT(Math.min(hi, Math.max(lo, tAt(ev.clientX))), ev, lo, hi) })
+        const t1 = snapT(Math.min(hi, Math.max(lo, tAt(ev.clientX))), ev, lo, hi)
+        patch = { t_end: t1 }
+        bar.style.width = `${Math.max(8, (t1 - o.t_start) * scale - 2)}px`
       }
     }
-    const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); if (moved) onOverlayCommit(o.id) }
+    const mv = (ev) => { last = ev; if (!id) id = requestAnimationFrame(step) }
+    const up = () => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up)
+      if (id) { cancelAnimationFrame(id); step() }
+      bar.classList.remove('dragging')
+      bar.style.cssText = css                    // React takes over again from here
+      if (patch) { flushSync(() => onOverlayDraft(o.id, patch)); onOverlayCommit(o.id) }
+    }
     window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
   }
   const lanes = Math.min(3, Math.max(-1, ...overlays.map((o) => o.track)) + 2)

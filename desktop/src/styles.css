@@ -419,3 +419,7 @@ button.record.on .rec-dot { animation: armed 1s ease-in-out infinite; box-shadow
 .preset.bottom b { left: 1px; right: 1px; bottom: 1px; height: 12px; }
 button.danger { color: #ffb3b3; border-color: #6b3434; background: transparent; justify-content: center; }
 button.danger:hover:not(:disabled) { background: #3a1f22; }
+.ov-box img { display: none; }
+.ov-box.show img, .ov-box.dragging img { display: block; }
+.ov-box.dragging, .sel-box:active { will-change: left, top, width, height; }
+.bar.ov.dragging { z-index: 9; box-shadow: 0 0 0 2px #a48bff, 0 8px 18px rgba(0,0,0,.5); cursor: grabbing; transition: none; }

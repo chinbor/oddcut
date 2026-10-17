@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import Icon from './icons.jsx'
 
 const fmt = (t) => {
@@ -39,6 +40,14 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
   const [menu, setMenu] = useState(null)          // right-click menu on a keyframe: {j, x, y}
   const [help, setHelp] = useState(false)
   const [rec, setRec] = useState(null)            // live recorded points while 边播边拖
+  const [fsz, setFsz] = useState([0, 0])            // preview frame size in px (for rounded overlay corners)
+  useEffect(() => {
+    const el = boxRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => { const r = el.getBoundingClientRect(); setFsz([r.width, r.height]) })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // ---- two stacked <video> layers: a new file loads behind, seeks to the same moment, then swaps in
   const [layers, setLayers] = useState([null, null])
@@ -129,66 +138,100 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
   const f = track ? Math.min(track.frames - 1, Math.max(0, Math.round(local * track.fps))) : 0
   const tIn = draft?.in || 0
   const tOut = draft?.out ?? (shot ? shot.t_end - shot.t_start : 0)
-  const visible = draft && track && inShot && local >= tIn && local < tOut
+  // at a keyframe the box sits exactly on it (no waiting for the tracked path to come back from the backend)
+  const kHere = draft && inShot ? draft.keys.find((k) => Math.abs(k.t - local) < 0.5 / fps) : null
+  const bx = kHere ? kHere.x : track?.x[f], by = kHere ? kHere.y : track?.y[f]
+  const bsize = kHere ? (kHere.size ?? 0.22) : track?.size[f]
+  const visible = draft && (track || kHere) && inShot && local >= tIn && local < tOut
   const rect = () => boxRef.current.getBoundingClientRect()
   const norm = (e) => { const r = rect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))] }
   const minSidePx = () => { const r = rect(); return Math.min(r.width, r.height) }
   const dismissHint = () => { setHint(false); try { localStorage.setItem('oddcut.hint.sticker2', '1') } catch {} }
 
-  const drag = (e, move, done = onCommit) => {
+  // Drags move the element itself, at most once per frame, and tell the app only when let go: re-rendering
+  // the whole editor on every pointer move is what made dragging stutter.
+  const drag = (e, move, done = () => {}, el = null) => {
     e.preventDefault()
     e.stopPropagation()
-    const mv = (ev) => move(ev)
-    const up = (ev) => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); done(ev) }
+    const css = el ? el.style.cssText : null
+    let last = null, id = 0
+    const step = () => { id = 0; if (last) move(last) }
+    const mv = (ev) => { last = ev; if (!id) id = requestAnimationFrame(step) }
+    const up = (ev) => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up)
+      if (id) { cancelAnimationFrame(id); step() }
+      if (el) el.style.cssText = css                  // React takes over again, with the new values
+      flushSync(() => done(ev))
+    }
     window.addEventListener('pointermove', mv)
     window.addEventListener('pointerup', up)
   }
+  const pct = (v) => `${v * 100}%`
   const onStickerDown = (e) => {
     if (e.button !== 0) return
     if (recordArmed) return startRecording(e)
+    const el = e.currentTarget
     const [x0, y0] = norm(e)
-    const cx = track.x[f], cy = track.y[f]
-    drag(e, (ev) => { const [x, y] = norm(ev); onDraft({ x: cx + (x - x0), y: cy + (y - y0) }) })
+    const cx = bx, cy = by
+    let at = null
+    drag(e, (ev) => {
+      const [x, y] = norm(ev)
+      at = { x: Math.min(1, Math.max(0, cx + x - x0)), y: Math.min(1, Math.max(0, cy + y - y0)) }
+      el.style.left = pct(at.x); el.style.top = pct(at.y)
+    }, () => { if (at) { onDraft(at); onCommit() } }, el)
   }
   const resize = (e) => {
+    const el = e.currentTarget.parentElement
     const r = rect()
-    const cx = r.left + track.x[f] * r.width, cy = r.top + track.y[f] * r.height
+    const cx = r.left + bx * r.width, cy = r.top + by * r.height
+    let size = null
     drag(e, (ev) => {
       const side = 2 * Math.max(Math.abs(ev.clientX - cx), Math.abs(ev.clientY - cy))
-      onDraft({ size: Math.min(0.6, Math.max(0.06, side / minSidePx())) })
-    })
+      size = Math.min(0.6, Math.max(0.06, side / minSidePx()))
+      el.style.width = pct((size * Math.min(aw, ah)) / aw); el.style.height = pct((size * Math.min(aw, ah)) / ah)
+    }, () => { if (size != null) { onDraft({ size }); onCommit() } }, el)
   }
   const onKeyDown = (e, j, k) => {
     setMenu(null)
     if (e.button === 2) return
     onSelectKey(j)
     onTime(shot.t_start + k.t + 0.001)
-    let moved = false
-    drag(e, (ev) => { moved = true; const [x, y] = norm(ev); onMoveKey(j, x, y) }, () => { if (moved) onCommit() })
+    const el = e.currentTarget
+    let at = null
+    drag(e, (ev) => { at = norm(ev); el.style.left = pct(at[0]); el.style.top = pct(at[1]) },
+         () => { if (at) { onMoveKey(j, at[0], at[1]); onCommit() } }, el)
   }
 
   // picture-in-picture: click to select, drag to move, corners resize (the box keeps its shape)
   const ovDown = (e, o) => {
     if (e.button !== 0) return
     if (o.id !== ovSel) onSelectOverlay(o.id)
+    const el = e.currentTarget
     const [x0, y0] = norm(e)
-    let moved = false
-    drag(e, (ev) => { const [x, y] = norm(ev); moved = true; onOverlayDraft(o.id, { x: o.x + x - x0, y: o.y + y - y0 }) },
-         () => { if (moved) onOverlayCommit() })
+    let at = null
+    el.classList.add('dragging')
+    drag(e, (ev) => {
+      const [x, y] = norm(ev)
+      at = { x: o.x + x - x0, y: o.y + y - y0 }
+      el.style.left = pct(at.x); el.style.top = pct(at.y)
+    }, () => { el.classList.remove('dragging'); if (at) { onOverlayDraft(o.id, at); onOverlayCommit() } }, el)
   }
   const ovResize = (e, o, c) => {
+    const el = e.currentTarget.parentElement
     const r = rect()
     const ratio = (o.w * r.width) / (o.h * r.height)            // box shape in pixels
     const ax = c.includes('w') ? o.x + o.w : o.x, ay = c.includes('n') ? o.y + o.h : o.y   // the opposite corner stays
+    let box = null
+    el.classList.add('dragging')
     drag(e, (ev) => {
       const [x, y] = norm(ev)
-      let wpx = Math.max(Math.abs(x - ax) * r.width, Math.abs(y - ay) * r.height * ratio, 24)
-      let w = Math.min(1.5, wpx / r.width), h = (wpx / ratio) / r.height
-      onOverlayDraft(o.id, { w, h, x: c.includes('w') ? ax - w : ax, y: c.includes('n') ? ay - h : ay })
-    })
+      const wpx = Math.max(Math.abs(x - ax) * r.width, Math.abs(y - ay) * r.height * ratio, 24)
+      const w = Math.min(1.5, wpx / r.width), h = (wpx / ratio) / r.height
+      box = { w, h, x: c.includes('w') ? ax - w : ax, y: c.includes('n') ? ay - h : ay }
+      el.style.left = pct(box.x); el.style.top = pct(box.y); el.style.width = pct(box.w); el.style.height = pct(box.h)
+    }, () => { el.classList.remove('dragging'); if (box) { onOverlayDraft(o.id, box); onOverlayCommit() } }, el)
   }
-  const frameW = boxRef.current ? boxRef.current.getBoundingClientRect().width : 0
-  const frameH = boxRef.current ? boxRef.current.getBoundingClientRect().height : 0
+  const [frameW, frameH] = fsz
   const liveOv = overlays.filter((o) => time >= o.t_start && time < o.t_end).sort((a, b) => a.track - b.track)
 
   // 边播边拖: hold the sticker, playback runs at half speed, the drag is recorded and thinned into keyframes
@@ -250,7 +293,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
   const showPath = draft && track && inShot && draft.mode !== 'still'
   const i0 = track ? Math.round(tIn * track.fps) : 0
   const i1 = track ? Math.min(track.frames - 1, Math.round(tOut * track.fps)) : 0
-  const side = visible ? track.size[f] * Math.min(aw, ah) : 0
+  const side = visible ? bsize * Math.min(aw, ah) : 0
 
   return (
     <div className="viewer">
@@ -302,7 +345,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
             ))}
             {visible && !rec && (
               <div className={`sel-box ${recordArmed ? 'armed' : ''}`} onPointerDown={onStickerDown}
-                   style={{ left: `${track.x[f] * 100}%`, top: `${track.y[f] * 100}%`, width: `${(side / aw) * 100}%`, height: `${(side / ah) * 100}%` }}>
+                   style={{ left: `${bx * 100}%`, top: `${by * 100}%`, width: `${(side / aw) * 100}%`, height: `${(side / ah) * 100}%` }}>
                 {showImage && stickerImage && <img src={stickerImage} alt="" draggable={false} />}
                 {!recordArmed && ['nw', 'ne', 'sw', 'se'].map((c) => <i key={c} className={`corner ${c}`} onPointerDown={resize} />)}
               </div>
@@ -311,11 +354,11 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
               const sel = o.id === ovSel
               if (!sel && shot) return null                  // while a shot is being edited, overlays stay out of the way
               return (
-                <div key={o.id} className={`ov-box ${sel ? 'sel' : ''}`} onPointerDown={(e) => ovDown(e, o)}
+                <div key={o.id} className={`ov-box ${sel ? 'sel' : ''} ${sel && ovShowImage ? 'show' : ''}`} onPointerDown={(e) => ovDown(e, o)}
                      title={sel ? '拖动移动，拖四角缩放' : `画中画 ${o.track + 1}：点一下选中`}
                      style={{ left: `${o.x * 100}%`, top: `${o.y * 100}%`, width: `${o.w * 100}%`, height: `${o.h * 100}%`,
                               borderRadius: o.radius * Math.min(o.w * frameW, o.h * frameH) }}>
-                  {sel && ovShowImage && clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} style={{ opacity: o.opacity }} />}
+                  {sel && clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} style={{ opacity: o.opacity }} />}
                   {sel && ['nw', 'ne', 'sw', 'se'].map((c) => <i key={c} className={`corner ${c}`} onPointerDown={(e) => ovResize(e, o, c)} />)}
                 </div>
               )

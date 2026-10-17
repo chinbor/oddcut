@@ -257,12 +257,17 @@ export default function App() {
   }, [plan?.plan, selected])
   const myDraft = draft && draft.index === selected ? draft : null
   const draftKey = myDraft ? JSON.stringify([myDraft.mode, myDraft.keys]) : ''
+  // the sticker's path; the previous one stays on screen until the new one is back (no blinking), and an
+  // answer for an older draft is dropped
+  const trackFor = useRef({ shot: null, n: 0 })
   useEffect(() => {
-    setTrack(null)
-    if (!myDraft || !myDraft.keys.length) return
+    if (trackFor.current.shot !== selected) { trackFor.current.shot = selected; setTrack(null) }
+    if (!myDraft || !myDraft.keys.length) { setTrack(null); return }
+    const n = ++trackFor.current.n
     const id = setTimeout(() => {
-      vc.api('POST', '/api/track', { plan: plan.plan, index: selected, place: myDraft }).then(setTrack).catch(() => {})
-    }, 90)
+      vc.api('POST', '/api/track', { plan: plan.plan, index: selected, place: myDraft })
+        .then((r) => { if (n === trackFor.current.n) setTrack(r) }).catch(() => {})
+    }, 60)
     return () => clearTimeout(id)
   }, [draftKey, plan?.plan, selected])
 
@@ -306,7 +311,16 @@ export default function App() {
     return { x: 0.52, y: 0.05, w, h: Math.min(0.9, w * (aw0 / ah0) * (c ? c.size[1] / c.size[0] : 9 / 16)) }
   }
   const overlapAt = (list, o) => list.some((p) => p.id !== o.id && p.track === o.track && p.t_start < o.t_end - 1e-3 && o.t_start < p.t_end - 1e-3)
-  const applyOverlays = guard(async (list) => commit(await runJob({ kind: 'overlays', analysis: analysis.analysis, plan: plan.plan, overlays: list })))
+  // a drag may end while another edit is still running: wait for it, then apply on top of the newest plan
+  const busyRef = useRef(false)
+  busyRef.current = busy
+  const planRef = useRef(plan)
+  planRef.current = plan
+  const whenIdle = () => new Promise((res) => { const tick = () => (busyRef.current ? setTimeout(tick, 40) : res()); tick() })
+  const applyOverlays = guard(async (list) => {
+    await whenIdle()
+    commit(await runJob({ kind: 'overlays', analysis: analysis.analysis, plan: planRef.current.plan, overlays: list }))
+  })
   const selectOverlay = (id) => { setSelected(null); setOvSel(id); const o = overlays.find((x) => x.id === id); if (o && (time < o.t_start || time >= o.t_end)) setTime(o.t_start + 0.01) }
   const addOverlay = (path, track = null, at = time) => {
     const c = clipInfo(path)
