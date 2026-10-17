@@ -1,151 +1,153 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import Inspector from './Inspector.jsx'
-import StickerOverlay from './StickerOverlay.jsx'
+import Icon from './icons.jsx'
+import Library from './Library.jsx'
+import NewProject from './NewProject.jsx'
+import Properties from './Properties.jsx'
 import Timeline from './Timeline.jsx'
+import Viewer from './Viewer.jsx'
 
 const vc = window.oddcut
-
-const STAGES = {
-  analyze: [['clips', 0.45, '分析素材画面'], ['music', 0.1, '分析音乐节拍'],
-            ['stickers', 0.3, '识别可加贴纸的物体'], ['drawn', 0.15, '寻找手绘开场镜头']],
-  plan: [['cuts', 1, '生成剪辑方案']],
-  music: [['music', 1, '分析新音乐的节拍']],
-  edit: [['edit', 1, '替换镜头']],
-  shot: [['edit', 1, '应用修改']],
-  check: [['check', 1, '检查能不能画']],
-  render: [['effects', 0.45, '渲染贴纸和手绘'], ['shots', 0.5, '渲染镜头'], ['mux', 0.05, '合成音乐']],
-  preview: [['shots', 0.9, '生成预览'], ['mux', 0.1, '合成音乐']],
-}
-const ROLES = {
-  hook: ['开场', '#7aa2ff'], drawn: ['手绘开场', '#ff9f6b'], body: ['快切', '#5c6378'],
-  breath: ['呼吸镜头', '#5fc9a8'], sticker: ['贴纸', '#ffd166'], outro: ['结尾', '#b18cff'],
-}
-const STICKERS = { eyes: '眼睛', anger: '💢', question: '问号' }
-// "plane@animal" -> 小飞机（跟随）; names come from /api/looks
-const stickerLabel = (sticker, looks) => {
-  const [id, mode] = sticker.split('@')
-  const name = looks.stickers.find((s) => s.id === id)?.name || STICKERS[id] || id
-  return mode ? `${name}（${mode === 'free' ? '装饰' : '跟随'}）` : name
-}
-const ASPECT_NAMES = { '9:16': '竖屏 9:16', '3:4': '3:4', '4:5': '4:5', '1:1': '方形 1:1', '16:9': '横屏 16:9' }
-
-// overall 0..1 for a job: stages run in order, so a later stage means the earlier ones are finished
-const stagesOf = (job) => STAGES[job?.preview ? 'preview' : job?.kind] || []
-
-function jobFraction(job) {
-  if (!job) return 0
-  if (job.status === 'done') return 1
-  const stages = stagesOf(job)
-  const lastSeen = Math.max(-1, ...stages.map(([s], i) => (job.stages[s] ? i : -1)))
-  let sum = 0
-  stages.forEach(([s, w], i) => {
-    if (i < lastSeen) sum += w
-    else if (job.stages[s]) sum += w * job.stages[s].fraction
-  })
-  return Math.min(1, sum / stages.reduce((a, [, w]) => a + w, 0))
-}
-
-function stageLabel(job) {
-  const stages = stagesOf(job)
-  for (let i = stages.length - 1; i >= 0; i--) {
-    const [s, , label] = stages[i]
-    const st = job.stages[s]
-    if (st) return st.total > 1 ? `${label} ${st.done}/${st.total}` : label
-  }
-  return '准备中'
-}
-
-const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
+const q = (s) => encodeURIComponent(s)
 const mediaUrl = (p) => `media://v/?p=${encodeURIComponent(p)}`
+const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
+const errText = (e) => String(e?.message || e).replace(/^Error invoking remote method 'api': Error: /, '')
+
+// what a blocking job is doing, for the progress pill / the 新建 button
+const STAGES = {
+  analyze: [['clips', 0.45, '分析素材画面'], ['music', 0.1, '分析音乐节拍'], ['stickers', 0.3, '找能加贴纸的东西'], ['drawn', 0.15, '找适合手绘的镜头']],
+  plan: [['cuts', 1, '排镜头']], music: [['music', 1, '分析新音乐']], edit: [['edit', 1, '换素材']], shot: [['edit', 1, '应用修改']],
+  cut: [['edit', 1, '调整切点']], retime: [['edit', 1, '对齐新节拍']], check: [['check', 1, '看这个镜头能不能画']],
+  render: [['effects', 0.5, '渲染贴纸和手绘'], ['shots', 0.45, '渲染镜头'], ['mux', 0.05, '合成音乐']],
+}
+function progressOf(job) {
+  if (!job) return null
+  const st = STAGES[job.kind] || []
+  let label = st[0]?.[2] || '处理中'
+  let sum = 0, all = 0
+  st.forEach(([s, w, l]) => { all += w; const e = job.stages[s]; if (e) { sum += w * e.fraction; label = l + (e.total > 1 ? ` ${e.done}/${e.total}` : '') } })
+  return { label, fraction: job.status === 'done' ? 1 : all ? sum / all : 0 }
+}
 
 export default function App() {
   const [backend, setBackend] = useState({ ready: false, error: null })
   const [templates, setTemplates] = useState([])
-  const [aspects, setAspects] = useState([])
-  const [form, setForm] = useState({ clips: '', music: '', template: '', aspect: '9:16', duration: 18,
-                                     stickerSel: ['eyes', 'anger', 'question'], drawn: true, drawnStyle: 'lineart' })
   const [looks, setLooks] = useState({ stickers: [], sticker_groups: [], drawn_styles: [] })
-  const [planLooks, setPlanLooks] = useState(null)  // the selection the current plan was made with
-  const [job, setJob] = useState(null)          // the running / last job, as the backend reports it
+  const [view, setView] = useState('new')
+  const [form, setForm] = useState({ clips: '', music: '', template: '', aspect: '9:16', duration: 18, autoStickers: true, drawn: true })
+  const [folderInfo, setFolderInfo] = useState(null)
   const [analysis, setAnalysis] = useState(null)
   const [plan, setPlan] = useState(null)
-  const [video, setVideo] = useState(null)        // the full render of the current plan
-  const [preview, setPreview] = useState(null)    // the quick low-res render of the current plan
-  const [error, setError] = useState(null)
-  const [notice, setNotice] = useState(null)
-  const cancelRef = useRef(null)
-  const videoRef = useRef(null)
-  const [selected, setSelected] = useState(null)   // shot open in the inspector
-  const [time, setTime] = useState(0)              // playhead, seconds on the timeline
+  const [job, setJob] = useState(null)
+  const [live, setLive] = useState(null)               // background preview: {video, done, total, pending}
+  const [previewSrc, setPreviewSrc] = useState(null)
+  const [time, setTime] = useState(0)
   const [playing, setPlaying] = useState(false)
+  const [selected, setSelected] = useState(null)
   const [thumbs, setThumbs] = useState(null)
   const [wave, setWave] = useState(null)
-  const [tab, setTab] = useState('shot')
-  const [draft, setDraft] = useState(null)         // sticker being placed on the selected shot (keyframes)
-  const [keySel, setKeySel] = useState(null)       // selected keyframe of the draft
-  const [track, setTrack] = useState(null)         // the draft's path, per frame (from /api/track)
-  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }))
+  const [draft, setDraft] = useState(null)              // working copy of the selected shot's hand-placed sticker
+  const [track, setTrack] = useState(null)
+  const [check, setCheck] = useState(null)              // drawable check of the selected shot
+  const [boxMode, setBoxMode] = useState(false)
+  const [past, setPast] = useState([])
+  const [future, setFuture] = useState([])
+  const [toasts, setToasts] = useState([])
+  const [songs, setSongs] = useState([])
+  const [exported, setExported] = useState(null)        // full render of the current plan
+  const [menu, setMenu] = useState(false)
+  const [width, setWidth] = useState(window.innerWidth)
+  const videoRef = useRef(null)
+  const liveToken = useRef(0)
+  const liveJob = useRef(null)
+  const cancelRef = useRef(null)
+  const busy = !!job && (job.status === 'running' || job.status === 'queued')
 
+  // ---------------------------------------------------------------- basics
+  const toast = useCallback((text, kind = 'info', action = null) => {
+    const id = Math.random().toString(36).slice(2)
+    setToasts((t) => [...t.slice(-3), { id, text, kind, action }])
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' || action ? 9000 : 5000)
+  }, [])
   useEffect(() => {
     const onReady = async (s) => {
       setBackend(s)
       if (!s.ready) return
-      const [t, a] = await Promise.all([vc.api('GET', '/api/templates'), vc.api('GET', '/api/aspects')])
+      const t = await vc.api('GET', '/api/templates')
       setTemplates(t.templates)
-      setAspects(a.aspects.map((x) => x.id))
-      if (t.templates[0]) setForm((f) => ({ ...f, template: f.template || t.templates[0].id,
-                                            duration: t.templates[0].duration || f.duration }))
-      vc.api('GET', '/api/looks').then(setLooks).catch(() => {})   // pictures are optional
+      if (t.templates[0]) setForm((f) => ({ ...f, template: f.template || t.templates[0].id, duration: t.templates[0].duration || f.duration }))
+      vc.api('GET', '/api/looks').then(setLooks).catch(() => {})
     }
     vc.onBackendReady(onReady)
     vc.onBackendExit((msg) => setBackend({ ready: false, error: msg }))
     vc.backendStatus().then((s) => (s.ready || s.error) && onReady(s))
+    const onResize = () => setWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
   }, [])
+  useEffect(() => {
+    if (!form.clips || !backend.ready) { setFolderInfo(null); return }
+    vc.api('GET', `/api/folder?path=${q(form.clips)}`).then(setFolderInfo).catch(() => setFolderInfo(null))
+  }, [form.clips, backend.ready])
+  useEffect(() => {
+    if (!form.music || !backend.ready) return
+    vc.api('GET', `/api/songs?near=${q(form.music)}`).then((r) => setSongs(r.songs)).catch(() => setSongs([]))
+  }, [form.music, backend.ready])
 
   const runJob = useCallback(async (body) => {
     const { id } = await vc.api('POST', '/api/jobs', body)
     cancelRef.current = () => vc.api('POST', `/api/jobs/${id}/cancel`)
-    for (;;) {
-      const j = { ...(await vc.api('GET', `/api/jobs/${id}`)), preview: !!body.preview }
-      setJob(j)
-      if (j.status === 'done') return j.result
-      if (j.status === 'cancelled') throw new Error('已取消')
-      if (j.status === 'failed') throw new Error(j.error)
-      await new Promise((r) => setTimeout(r, 400))
-    }
-  }, [])
-
-  const guard = (fn) => async () => {
-    setError(null)
-    setNotice(null)
     try {
-      await fn()
-    } catch (e) {
-      setError(String(e.message || e).replace(/^Error invoking remote method 'api': Error: /, ''))
+      for (;;) {
+        const j = await vc.api('GET', `/api/jobs/${id}`)
+        setJob(j)
+        if (j.status === 'done') return j.result
+        if (j.status === 'cancelled') throw new Error('已取消')
+        if (j.status === 'failed') throw new Error(j.error)
+        await new Promise((r) => setTimeout(r, 250))
+      }
     } finally {
       cancelRef.current = null
       setJob((j) => (j && j.status === 'running' ? { ...j, status: 'failed' } : j))
     }
+  }, [])
+  const guard = (fn) => async (...args) => {
+    try { await fn(...args) } catch (e) { if (errText(e) !== '已取消') toast(errText(e), 'error') }
   }
 
-  const busy = job && (job.status === 'running' || job.status === 'queued')
+  // ---------------------------------------------------------------- live preview (先快后全)
+  const startLive = useCallback(async (p) => {
+    const token = ++liveToken.current
+    if (liveJob.current) vc.api('POST', `/api/jobs/${liveJob.current}/cancel`).catch(() => {})
+    setLive({ done: 0, total: 0, pending: [], starting: true })
+    let id
+    try { id = (await vc.api('POST', '/api/jobs', { kind: 'live', plan: p.plan })).id } catch (e) { toast(errText(e), 'error'); return }
+    liveJob.current = id
+    let shown = null
+    for (;;) {
+      if (token !== liveToken.current) return
+      let j
+      try { j = await vc.api('GET', `/api/jobs/${id}`) } catch { return }
+      if (token !== liveToken.current) return
+      const pa = j.partial
+      if (pa) {
+        setLive(pa)
+        if (pa.video !== shown) { shown = pa.video; setPreviewSrc(pa.video) }
+      }
+      if (j.status !== 'running' && j.status !== 'queued') {
+        if (j.status === 'failed') toast(`预览没生成好：${j.error}`, 'error')
+        if (j.status === 'done' && j.result?.failed?.length) toast(`${j.result.failed.length} 个镜头的贴纸 / 手绘没放上去（画面里没找到合适的位置）`)
+        liveJob.current = null
+        return
+      }
+      await new Promise((r) => setTimeout(r, 400))
+    }
+  }, [toast])
 
-  const lookParams = () => ({ stickers: form.stickerSel, drawn_style: form.drawnStyle })
-  const looksKey = JSON.stringify(lookParams())
-  const toggleSticker = (id) => setForm((f) => ({
-    ...f, stickerSel: f.stickerSel.includes(id) ? f.stickerSel.filter((x) => x !== id) : [...f.stickerSel, id],
-  }))
-
-  // every new plan gets a quick preview right away; the full render is a separate click.
-  // keep=true (an edit of the same plan): the old preview stays up until the new one is ready
-  const showPlan = async (p, keep = false) => {
+  const loadPlan = useCallback((p) => {
     setPlan(p)
-    setVideo(null)
-    if (!keep) setPreview(null)
-    setPreview(await runJob({ kind: 'render', plan: p.plan, preview: true }))
-  }
-
-  const q = (s) => encodeURIComponent(s)
+    setExported(null)
+    startLive(p)
+  }, [startLive])
   useEffect(() => {
     if (!plan) return
     setThumbs(null)
@@ -153,120 +155,165 @@ export default function App() {
     vc.api('GET', `/api/waveform?plan=${q(plan.plan)}`).then(setWave).catch(() => {})
   }, [plan?.plan])
 
-  // playhead <-> video: scrubbing seeks the video; while playing the playhead follows it every frame
-  const seek = (t) => {
-    setTime(t)
-    const v = videoRef.current
-    if (v && Math.abs(v.currentTime - t) > 0.02) v.currentTime = t
+  // ---------------------------------------------------------------- history
+  const snapshot = () => ({ plan, analysis })
+  const commit = (r, notes = r.notes) => {
+    setPast((h) => [...h.slice(-49), snapshot()])
+    setFuture([])
+    if (selected != null && selected >= r.shots.length) setSelected(null)
+    loadPlan(r)
+    if (notes?.length) toast(notes.join('；'))
   }
-  useEffect(() => {
-    if (!playing) return
-    let id
-    const tick = () => { if (videoRef.current) setTime(videoRef.current.currentTime); id = requestAnimationFrame(tick) }
-    id = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(id)
-  }, [playing])
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.code !== 'Space' || ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(e.target.tagName)) return
-      const v = videoRef.current
-      if (!v) return
-      e.preventDefault()
-      v.paused ? v.play() : v.pause()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-  const selectShot = (i) => {
-    setSelected(i)
-    setTab('shot')
-    const s = plan.shots[i]
-    if (time < s.t_start || time >= s.t_end) seek(s.t_start + 0.01)
-  }
+  const restore = (s) => { setAnalysis(s.analysis); loadPlan(s.plan) }
+  const undo = () => { if (!past.length || busy) return; setFuture((f) => [snapshot(), ...f]); restore(past[past.length - 1]); setPast((h) => h.slice(0, -1)) }
+  const redo = () => { if (!future.length || busy) return; setPast((h) => [...h, snapshot()]); restore(future[0]); setFuture((f) => f.slice(1)) }
 
-  // the sticker draft follows the selected shot: what the plan has, until the user edits it
+  // ---------------------------------------------------------------- new project
+  const pickFolder = async () => { const p = await vc.pickFolder('选择视频素材文件夹'); if (p) setForm((f) => ({ ...f, clips: p })) }
+  const pickMusic = async () => { const p = await vc.pickMusic(); if (p) setForm((f) => ({ ...f, music: p })) }
+  const useExamples = async () => { const ex = await vc.examples(); setForm((f) => ({ ...f, clips: ex.clips, music: ex.music })) }
+  const allStickers = () => looks.stickers.map((s) => s.id)
+  const generate = guard(async () => {
+    const a = await runJob({ kind: 'analyze', clips: form.clips, music: form.music, template: form.template, aspect: form.aspect,
+                             duration: Number(form.duration), stickers: form.autoStickers, drawn: form.drawn })
+    setAnalysis(a)
+    const p = await runJob({ kind: 'plan', analysis: a.analysis, stickers: form.autoStickers ? allStickers() : [] })
+    setPast([]); setFuture([]); setSelected(null); setTime(0); setPreviewSrc(null)
+    setView('editor')
+    loadPlan(p)
+    const rejected = a.clips.filter((c) => c.rejected)
+    if (rejected.length) toast(`${rejected.length} 段素材没用上：${rejected.map((c) => `${c.name}（${c.reason}）`).join('，')}`)
+  })
+
+  // ---------------------------------------------------------------- edits (each one = one undo step)
+  const shotAt = (t) => plan.shots.findIndex((s) => t >= s.t_start && t < s.t_end)
+  const target = () => (selected != null ? selected : Math.max(0, shotAt(time)))
+  const localT = (i) => { const s = plan.shots[i]; const fps = plan.fps || 30; return Math.round(Math.min(Math.max(0, time - s.t_start), s.t_end - s.t_start - 0.01) * fps) / fps }
+  const applyShot = guard(async (index, change) => commit(await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, ...change })))
+  const swapShot = guard(async (index, clip) => commit(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip })))
+  const moveCut = guard(async (k, t, snap) => commit(await runJob({ kind: 'cut', analysis: analysis.analysis, plan: plan.plan, k, t, snap })))
+
+  const placeSticker = (i, id, x, y) => {
+    setSelected(i)
+    applyShot(i, { sticker: { id, mode: 'follow', in: 0, keys: [{ t: localT(i), x, y, size: 0.22 }] } })
+  }
+  const addSticker = (id) => placeSticker(target(), id, 0.5, 0.42)
+  const dropSticker = (id, x, y) => placeSticker(Math.max(0, shotAt(time)), id, x, y)
+
+  const runCheck = async (i, box) => {
+    setCheck({ index: i, pending: true })
+    try {
+      const r = await runJob({ kind: 'check', plan: plan.plan, index: i, box })
+      setCheck({ index: i, ...r, box })
+      return r
+    } catch (e) { setCheck(null); toast(errText(e), 'error'); return null }
+  }
+  const drawShot = async (i, style, box = null) => {
+    const s = plan.shots[i]
+    if (s.drawn && !box) return applyShot(i, { drawn: { style, box: s.drawn.box, force: s.drawn.force } })
+    const r = await runCheck(i, box)
+    if (r?.ok) { setCheck(null); return applyShot(i, { drawn: { style, box, label: r.label } }) }
+  }
+  const applyStyle = (style) => { const i = target(); setSelected(i); drawShot(i, style) }
+
+  // ---------------------------------------------------------------- the selected shot's sticker draft
   useEffect(() => {
     const s = plan && selected != null ? plan.shots[selected] : null
     setDraft(s?.sticker_at ? { index: selected, id: s.sticker.split('@')[0], ...s.sticker_at } : null)
-    setKeySel(null)
+    setCheck((c) => (c && c.index === selected ? c : null))
+    setBoxMode(false)
   }, [plan?.plan, selected])
   const myDraft = draft && draft.index === selected ? draft : null
-  // the draft differs from what the plan (and so the rendered preview) already has
-  const draftDirty = (() => {
-    const s = myDraft && plan?.shots[selected]
-    if (!s) return false
-    const norm = (d) => d && JSON.stringify([d.id, d.mode, d.keys, d.in || 0, d.out ?? null])
-    return norm(myDraft) !== norm(s.sticker_at ? { id: s.sticker.split('@')[0], ...s.sticker_at } : null)
-  })()
   const draftKey = myDraft ? JSON.stringify([myDraft.mode, myDraft.keys]) : ''
   useEffect(() => {
     setTrack(null)
     if (!myDraft || !myDraft.keys.length) return
     const id = setTimeout(() => {
       vc.api('POST', '/api/track', { plan: plan.plan, index: selected, place: myDraft }).then(setTrack).catch(() => {})
-    }, 120)
+    }, 90)
     return () => clearTimeout(id)
   }, [draftKey, plan?.plan, selected])
 
-  // click on the picture at the playhead: move the keyframe at this moment, or add one; returns its index
-  const placeAt = (x, y) => {
-    const s = plan.shots[selected]
+  // move / resize at the playhead: the keyframe at this moment changes, or a new one is made
+  const editDraft = (patch) => {
+    const i = selected
+    const s = plan.shots[i]
+    const t = localT(i)
     const fps = plan.fps || 30
-    const t = Math.round(Math.min(Math.max(0, time - s.t_start), s.t_end - s.t_start - 0.01) * fps) / fps
-    let j = myDraft.keys.findIndex((k) => Math.abs(k.t - t) < 0.5 / fps)
-    const keys = [...myDraft.keys]
-    if (j >= 0) {
-      keys[j] = { ...keys[j], x, y }
-    } else {
-      const f = track ? Math.min(track.frames - 1, Math.round(t * track.fps)) : 0
-      const size = track ? track.size[f] : keys[0]?.size ?? 0.22
-      keys.push({ t, x, y, size })
-      keys.sort((a, b) => a.t - b.t)
-      j = keys.findIndex((k) => k.t === t)
-    }
-    setDraft({ ...myDraft, keys })
-    setKeySel(j)
-    return j
-  }
-  const moveKey = (j, x, y) => setDraft((d) => ({ ...d, keys: d.keys.map((k, i) => (i === j ? { ...k, x, y } : k)) }))
-  useEffect(() => {
-    const onKey = (e) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && keySel != null && myDraft
-          && !['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) {
-        setDraft((d) => ({ ...d, keys: d.keys.filter((_, i) => i !== keySel) }))
-        setKeySel(null)
+    setDraft((d0) => {
+      const d = d0 && d0.index === i ? d0 : { index: i, id: s.sticker.split('@')[0], mode: 'follow', in: 0, out: null, keys: [] }
+      const keys = [...d.keys]
+      let j = keys.findIndex((k) => Math.abs(k.t - t) < 0.5 / fps)
+      if (j < 0) {
+        const f = track ? Math.min(track.frames - 1, Math.round(t * track.fps)) : 0
+        const cur = track ? { x: track.x[f], y: track.y[f], size: track.size[f] } : keys[0] || { x: 0.5, y: 0.42, size: 0.22 }
+        keys.push({ t, x: cur.x, y: cur.y, size: cur.size })
+        keys.sort((a, b) => a.t - b.t)
+        j = keys.findIndex((k) => k.t === t)
       }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [keySel, myDraft])
+      keys[j] = { ...keys[j], ...patch, x: Math.min(1, Math.max(0, patch.x ?? keys[j].x)), y: Math.min(1, Math.max(0, patch.y ?? keys[j].y)) }
+      return { ...d, keys }
+    })
+  }
+  const draftRef = useRef(null)
+  draftRef.current = myDraft
+  // after the drag's last state update has rendered (draftRef is set during render)
+  const commitDraft = () => setTimeout(() => {
+    const d = draftRef.current
+    if (!d || !d.keys.length) return
+    const { index, ...place } = d
+    applyShot(index, { sticker: place })
+  }, 30)
+  const onInOut = (which, v, done) => {
+    setDraft((d) => (d ? { ...d, [which]: v } : d))
+    if (done) commitDraft()
+  }
+  const curSize = (() => {
+    if (!myDraft || selected == null) return null
+    const f = track ? Math.min(track.frames - 1, Math.max(0, Math.round(localT(selected) * track.fps))) : 0
+    return track ? track.size[f] : myDraft.keys[0]?.size
+  })()
 
-  // undo / redo: every edit of the current plan is a new plan file, so history is just the earlier results
-  const [past, setPast] = useState([])
-  const [future, setFuture] = useState([])
-  const snapshot = () => ({ plan, preview, analysis })
-  const commitEdit = async (r) => {
-    setPast((p) => [...p.slice(-49), snapshot()])
-    setFuture([])
-    if (selected != null && selected >= r.shots.length) setSelected(null)
-    await showPlan(r, true)
-  }
-  const restore = (s) => { setPlan(s.plan); setPreview(s.preview); setAnalysis(s.analysis); setVideo(null) }
-  const undo = () => {
-    if (!past.length || busy) return
-    setFuture((f) => [snapshot(), ...f])
-    restore(past[past.length - 1])
-    setPast((p) => p.slice(0, -1))
-  }
-  const redo = () => {
-    if (!future.length || busy) return
-    setPast((p) => [...p, snapshot()])
-    restore(future[0])
-    setFuture((f) => f.slice(1))
-  }
+  // ---------------------------------------------------------------- regenerate / music / export
+  const reroll = guard(async () => {
+    setMenu(false)
+    if (plan.manual && !window.confirm('换一版会重新排所有镜头，手动加的贴纸、手绘和调过的切点都会丢掉（可以撤销回来）。确定吗？')) return
+    commit(await runJob({ kind: 'plan', analysis: analysis.analysis, stickers: form.autoStickers ? allStickers() : [] }), [])
+    setSelected(null)
+  })
+  const changeMusic = guard(async (music) => {
+    setMenu(false)
+    if (!music) music = await vc.pickMusic()
+    if (!music) return
+    const keep = plan.manual && window.confirm('保留现在的剪辑，只把切点对齐到新歌的节拍？\n\n确定：保留剪辑（贴纸、手绘、切点都保留）\n取消：按新歌重新排镜头（手动效果尽量保留）')
+    const before = snapshot()
+    const a = await runJob({ kind: 'music', analysis: analysis.analysis, music, duration: Number(form.duration) })
+    const p = keep ? await runJob({ kind: 'retime', analysis: a.analysis, plan: plan.plan })
+      : await runJob({ kind: 'plan', analysis: a.analysis, stickers: form.autoStickers ? allStickers() : [], carry_from: plan.plan })
+    setAnalysis(a)
+    setForm((f) => ({ ...f, music }))
+    setPast((h) => [...h.slice(-49), before]); setFuture([])
+    if (!keep) setSelected(null)
+    loadPlan(p)
+    toast([`已换成 ${a.music.name}（${Math.round(a.music.tempo)} BPM）`, keep ? '剪辑保留，切点对齐了新节拍' : '镜头按新节拍重新排了', ...(p.notes || [])].join('；'))
+  })
+  const exportVideo = guard(async () => {
+    let v = exported?.plan === plan.plan ? exported : null
+    if (!v) {
+      const r = await runJob({ kind: 'render', plan: plan.plan })
+      v = { plan: plan.plan, video: r.video }
+      setExported(v)
+    }
+    const dest = await vc.exportVideo(v.video)
+    if (dest) toast(`已导出：${fileName(dest)}`, 'ok', { label: '打开所在文件夹', run: () => vc.showInFolder(dest) })
+  })
+
+  // ---------------------------------------------------------------- keys
   useEffect(() => {
     const onKey = (e) => {
-      if (!(e.ctrlKey || e.metaKey) || ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return
+      if (e.key === 'Escape') { if (boxMode) setBoxMode(false); else if (menu) setMenu(false); else setSelected(null) }
+      if (!(e.ctrlKey || e.metaKey)) return
       const k = e.key.toLowerCase()
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
       if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo() }
@@ -275,285 +322,104 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  const applyShot = (index, change) => guard(async () => {
-    const r = await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, ...change })
-    if (r.notes?.length) setNotice(r.notes.join('；'))
-    await commitEdit(r)
-  })()
-  const moveCut = (k, t, snap) => guard(async () => {
-    await commitEdit(await runJob({ kind: 'cut', analysis: analysis.analysis, plan: plan.plan, k, t, snap }))
-  })()
-  const checkShot = (index, box) => runJob({ kind: 'check', plan: plan.plan, index, box })
-  const getStill = (index, t) => vc.api('GET', `/api/still?plan=${q(plan.plan)}&index=${index}&t=${t}`)
+  // ---------------------------------------------------------------- render
+  const stickerName = (sticker) => {
+    if (!sticker) return ''
+    const id = sticker.split('@')[0]
+    return looks.stickers.find((s) => s.id === id)?.name || id
+  }
+  const styleName = (id) => looks.drawn_styles.find((d) => d.id === (id || 'lineart'))?.name || '线稿上色'
+  const progress = progressOf(busy ? job : null)
+  const toastsEl = (
+    <div className="toasts">
+      {toasts.map((t) => (
+        <div key={t.id} className={`toast ${t.kind}`}>
+          <Icon name={t.kind === 'error' ? 'alert' : 'check'} size={18} /><span>{t.text}</span>
+          {t.action && <button onClick={() => { t.action.run(); setToasts((x) => x.filter((y) => y.id !== t.id)) }}>{t.action.label}</button>}
+          <button className="icon" onClick={() => setToasts((x) => x.filter((y) => y.id !== t.id))} aria-label="关闭"><Icon name="close" size={14} /></button>
+        </div>
+      ))}
+    </div>
+  )
 
-  const makePlan = guard(async () => {
-    setSelected(null)
-    setPast([])
-    setFuture([])
-    setPlan(null)
-    setVideo(null)
-    setPreview(null)
-    const a = await runJob({ kind: 'analyze', clips: form.clips, music: form.music, template: form.template,
-                             aspect: form.aspect, duration: Number(form.duration),
-                             stickers: true, drawn: form.drawn })
-    setAnalysis(a)
-    const rejected = a.clips.filter((c) => c.rejected)
-    if (rejected.length) setNotice(`${rejected.length} 段素材没被选用：${rejected.map((c) => `${c.name}（${c.reason}）`).join('，')}`)
-    setPlanLooks(looksKey)
-    await showPlan(await runJob({ kind: 'plan', analysis: a.analysis, ...lookParams() }))
-  })
-
-  const rerollPlan = guard(async () => {
-    if (plan?.manual && !window.confirm('换一版会重新排所有镜头，手动加的贴纸、手绘和调过的切点都会丢掉（可以撤销回来）。确定吗？')) return
-    setPast((h) => [...h.slice(-49), snapshot()])
-    setFuture([])
-    setSelected(null)
-    setPlanLooks(looksKey)
-    await showPlan(await runJob({ kind: 'plan', analysis: analysis.analysis, ...lookParams() }))
-  })
-
-  const changeMusic = guard(async () => {
-    const music = await vc.pickMusic()
-    if (!music) return
-    // an edited plan can keep its edit and just move onto the new song's beats
-    const keep = plan?.manual && window.confirm('保留现在的剪辑，只把镜头切点对齐到新歌的节拍？\n\n确定：保留剪辑（贴纸、手绘、切点都保留）\n取消：按新歌重新排镜头（手动效果尽量保留）')
-    const before = snapshot()
-    const a = await runJob({ kind: 'music', analysis: analysis.analysis, music, duration: Number(form.duration) })
-    setAnalysis(a)
-    set('music')(music)
-    const p = keep
-      ? await runJob({ kind: 'retime', analysis: a.analysis, plan: plan.plan })
-      : await runJob({ kind: 'plan', analysis: a.analysis, ...lookParams(), carry_from: plan.plan })
-    if (!keep) setPlanLooks(looksKey)
-    setNotice([`已换成 ${a.music.name}（${a.music.tempo} BPM）`, keep ? '剪辑保留，切点对齐到新歌的节拍' : '镜头按新节拍重新排了',
-               ...(p.notes || [])].join('；'))
-    setPast((h) => [...h.slice(-49), before])
-    setFuture([])
-    if (!keep) setSelected(null)
-    await showPlan(p, keep)
-  })
-
-  const swapShot = (index, clip) => guard(async () => {
-    await commitEdit(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip }))
-  })()
-
-  const render = guard(async () => {
-    setVideo(await runJob({ kind: 'render', plan: plan.plan }))
-  })
-
-  const useExamples = async () => {
-    const ex = await vc.examples()
-    setForm((f) => ({ ...f, clips: ex.clips, music: ex.music }))
+  if (!backend.ready || view === 'new' || !plan) {
+    return (
+      <>
+        {!backend.ready && (
+          <div className={`boot ${backend.error ? 'bad' : ''}`}>{backend.error ? <pre>{backend.error}</pre> : '正在启动剪辑引擎…'}</div>
+        )}
+        <NewProject form={form} setForm={setForm} templates={templates} folderInfo={folderInfo}
+                    musicInfo={{ name: fileName(form.music), tempo: analysis && fileName(analysis.music?.path) === fileName(form.music) ? analysis.music.tempo : null }}
+                    onPickFolder={pickFolder} onPickMusic={pickMusic} onExamples={useExamples} onGenerate={generate}
+                    canGenerate={backend.ready && form.clips && form.music && form.template} busy={busy} progress={progress}
+                    hasProject={!!plan} onBack={() => setView('editor')} />
+        {toastsEl}
+      </>
+    )
   }
 
-  const usableClips = analysis ? analysis.clips.filter((c) => !c.rejected) : []
-  const shown = video || preview
-
-  const exportVideo = async () => {
-    const dest = await vc.exportVideo(video.video)
-    if (dest) setNotice(`已导出到 ${dest}`)
-  }
-
-  const canStart = backend.ready && form.clips && form.music && form.template && !busy
-  const [aw, ah] = (plan?.aspect || form.aspect).split(':').map(Number)
+  const shot = selected != null ? plan.shots[selected] : null
+  const [aw, ah] = plan.aspect.split(':').map(Number)
+  const rail = width < 1100
+  const autoSticker = !!(shot && shot.sticker && !shot.sticker_at)
 
   return (
-    <div className="app">
-      <aside className="side">
-        <div className="brand">
-          Oddcut <span className={`dot ${backend.ready ? 'ok' : backend.error ? 'bad' : ''}`} />
+    <div className={`editor ${shot ? 'with-props' : ''} ${rail ? 'narrow' : ''}`}>
+      <header className="topbar">
+        <button className="ghost" onClick={() => setView('new')} title="新建 / 改素材"><Icon name="back" size={18} />新建</button>
+        <div className="title">
+          <b>{folderInfo?.name || fileName(form.clips) || '短片'} 的剪辑</b>
+          <small>{plan.aspect} · {plan.duration.toFixed(1)} 秒 · {plan.shots.length} 个镜头 · {fileName(analysis?.music?.path)}</small>
         </div>
-
-        <section>
-          <h3>1 · 素材</h3>
-          <button className="pick" onClick={async () => { const p = await vc.pickFolder('选择素材文件夹'); if (p) set('clips')(p) }}>
-            <span>视频文件夹</span><b>{fileName(form.clips) || '选择…'}</b>
-          </button>
-          <button className="pick" onClick={async () => { const p = await vc.pickMusic(); if (p) set('music')(p) }}>
-            <span>音乐</span><b>{fileName(form.music) || '选择…'}</b>
-          </button>
-          <button className="link" onClick={useExamples}>用示例素材试一下</button>
-        </section>
-
-        <section>
-          <h3>2 · 风格</h3>
-          {templates.map((t) => (
-            <label key={t.id} className={`card ${form.template === t.id ? 'on' : ''}`}>
-              <input type="radio" name="tpl" checked={form.template === t.id}
-                     onChange={() => setForm((f) => ({ ...f, template: t.id, duration: t.duration || f.duration }))} />
-              <b>{t.name}</b>
-              <small>{t.description}</small>
-            </label>
-          ))}
-        </section>
-
-        <section>
-          <h3>3 · 画幅和时长</h3>
-          <div className="seg">
-            {aspects.map((a) => (
-              <button key={a} className={form.aspect === a ? 'on' : ''} onClick={() => set('aspect')(a)}>
-                {ASPECT_NAMES[a] || a}
-              </button>
-            ))}
-          </div>
-          <label className="row">
-            <span>目标时长</span>
-            <input type="range" min="10" max="40" value={form.duration} onChange={(e) => set('duration')(e.target.value)} />
-            <b>{form.duration}s</b>
-          </label>
-        </section>
-
-        <section>
-          <h3>4 · 贴纸选择 <small>{form.stickerSel.length ? `已选 ${form.stickerSel.length} 种` : '不加贴纸'}</small></h3>
-          {looks.sticker_groups.filter((g) => looks.stickers.some((s) => s.group === g.id)).map((g) => (
-            <div key={g.id} className="look-group">
-              <span className="look-label">{g.name}</span>
-              <div className="tiles">
-                {looks.stickers.filter((s) => s.group === g.id).map((s) => (
-                  <button key={s.id} className={`tile ${form.stickerSel.includes(s.id) ? 'on' : ''}`}
-                          onClick={() => toggleSticker(s.id)} aria-pressed={form.stickerSel.includes(s.id)}
-                          title={s.families.includes('free') ? '有猫狗、杯子等主体时跟着它动，没有时在画面空白处做装饰动画'
-                            : s.families.includes('animal') ? '贴在猫狗等动物头上' : '贴在杯子、碗等物体上'}>
-                    <img src={s.preview} alt="" />
-                    <span>{s.name}</span>
-                  </button>
-                ))}
-              </div>
+        <span className="spacer" />
+        {busy && progress && (
+          <span className="busy-pill"><i className="spin" />{progress.label}{job?.kind === 'render' ? ` · ${Math.round(progress.fraction * 100)}%` : ''}
+            {job?.kind === 'render' && <button className="link" onClick={() => cancelRef.current?.()}>取消</button>}</span>
+        )}
+        <button className="icon big" disabled={!past.length || busy} onClick={undo} title="撤销（Ctrl+Z）"><Icon name="undo" /></button>
+        <button className="icon big" disabled={!future.length || busy} onClick={redo} title="重做（Ctrl+Shift+Z）"><Icon name="redo" /></button>
+        <div className="menu-wrap">
+          <button className="secondary" disabled={busy} onClick={() => setMenu((m) => !m)}>重新生成<Icon name="chevronDown" size={16} /></button>
+          {menu && (
+            <div className="menu" onMouseLeave={() => setMenu(false)}>
+              <button onClick={reroll}><b>换一版</b><small>同样的素材和音乐，重新排镜头</small></button>
+              <button onClick={() => changeMusic()}><b>换音乐…</b><small>可保留现在的剪辑，只对齐新节拍</small></button>
+              <button onClick={() => { setMenu(false); setView('new') }}><b>改素材、画幅或时长…</b><small>回到新建页修改</small></button>
             </div>
-          ))}
-        </section>
+          )}
+        </div>
+        <button className="primary" disabled={busy} onClick={exportVideo}><Icon name="export" size={18} />导出视频</button>
+      </header>
 
-        <section>
-          <h3>5 · 手绘风格选择</h3>
-          <label className="row"><input type="checkbox" checked={form.drawn} onChange={(e) => set('drawn')(e.target.checked)} />用手绘开场（素材里有合适镜头时）</label>
-          <div className={`styles ${form.drawn ? '' : 'off'}`}>
-            {looks.drawn_styles.map((d) => (
-              <button key={d.id} className={`style-card ${form.drawnStyle === d.id ? 'on' : ''}`} disabled={!form.drawn}
-                      onClick={() => set('drawnStyle')(d.id)} aria-pressed={form.drawnStyle === d.id}>
-                <img src={d.preview} alt="" />
-                <b>{d.name}</b>
-                <small>{d.description}</small>
-              </button>
-            ))}
-          </div>
-        </section>
+      <Library looks={looks} activeSticker={shot?.sticker?.split('@')[0]} activeStyle={shot?.drawn ? shot.drawn.style || 'lineart' : null}
+               onAddSticker={addSticker} onApplyStyle={applyStyle} music={{ path: analysis?.music?.path, name: analysis?.music?.name, tempo: analysis?.music?.tempo }}
+               songs={songs} onPickSong={(s) => changeMusic(s)} onBrowseMusic={() => changeMusic()} busy={busy} rail={rail} />
 
-        <button className="primary" disabled={!canStart} onClick={makePlan}>
-          {analysis ? '重新分析并生成方案' : '分析素材并生成方案'}
-        </button>
-      </aside>
+      <Viewer src={previewSrc && mediaUrl(previewSrc)} videoRef={videoRef} time={time} onTime={setTime} playing={playing} setPlaying={setPlaying}
+              duration={plan.duration} fps={plan.fps || 30} aspect={[aw, ah]} shot={shot} draft={myDraft} track={track}
+              stickerImage={myDraft && looks.stickers.find((s) => s.id === myDraft.id)?.preview} autoSticker={autoSticker}
+              onDraft={editDraft} onCommit={commitDraft} onDropSticker={dropSticker} boxMode={boxMode}
+              onBox={(b) => { setBoxMode(false); drawShot(selected, shot.drawn?.style || 'lineart', b) }}
+              status={live?.starting ? '正在生成预览…' : null} />
 
-      <main className="main">
-        {!backend.ready && (
-          <div className={`banner ${backend.error ? 'bad' : ''}`}>
-            {backend.error ? <pre>{backend.error}</pre> : '正在启动剪辑引擎…'}
-          </div>
-        )}
-        {error && <div className="banner bad">{error}</div>}
-        {plan && analysis && planLooks && planLooks !== looksKey && !busy && (
-          <div className="banner">贴纸或手绘风格改了，点「换一版」按新的选择重新排镜头。</div>
-        )}
-        {notice && <div className="banner">{notice}</div>}
+      {shot && (
+        <Properties shot={shot} index={selected} thumb={thumbs?.[selected]} looks={looks}
+                    usableClips={analysis ? analysis.clips.filter((c) => !c.rejected) : []}
+                    draft={myDraft && { ...myDraft, curSize }} check={check && check.index === selected ? check : null} busy={busy}
+                    onClose={() => setSelected(null)} onSwap={(clip) => swapShot(selected, clip)}
+                    onRemoveSticker={() => applyShot(selected, { sticker: null })}
+                    onMode={(mode) => { const { index, ...place } = myDraft; applyShot(selected, { sticker: { ...place, mode } }) }}
+                    onSize={(v) => editDraft({ size: v })} onSizeCommit={commitDraft}
+                    onDrawn={(on) => { if (on) drawShot(selected, 'lineart'); else { setCheck(null); applyShot(selected, { drawn: null }) } }}
+                    onStyle={(st) => drawShot(selected, st)}
+                    onForceDrawn={() => { const c = check; setCheck(null); applyShot(selected, { drawn: { style: 'lineart', box: c?.box, force: true, label: c?.label } }) }}
+                    onBoxMode={() => setBoxMode(true)} stickerName={stickerName} />
+      )}
 
-        {busy && (
-          <div className="progress">
-            <div className="bar"><i style={{ width: `${Math.round(jobFraction(job) * 100)}%` }} /></div>
-            <div className="meta">
-              <span>{stageLabel(job)} · {Math.round(jobFraction(job) * 100)}% · {job.elapsed}s</span>
-              <button className="link" onClick={() => cancelRef.current?.()}>取消</button>
-            </div>
-          </div>
-        )}
-
-        {!plan && !busy && (
-          <div className="empty">
-            <h2>选好素材和音乐，点「分析素材并生成方案」</h2>
-            <p>全程在你的电脑上运行，素材不会上传。</p>
-          </div>
-        )}
-
-        {plan && (
-          <div className="editor">
-            <div className="toolbar">
-              <h2>剪辑方案 <small>{plan.shots.length} 个镜头 · {plan.duration}s · {plan.aspect} · 方案 #{plan.seed}</small></h2>
-              <div className="actions">
-                <button disabled={busy || !past.length} onClick={undo} title="撤销（Ctrl+Z）">↶</button>
-                <button disabled={busy || !future.length} onClick={redo} title="重做（Ctrl+Shift+Z）">↷</button>
-                <button disabled={busy} onClick={rerollPlan} title="同样的素材和音乐，换一种剪法">换一版</button>
-                <button disabled={busy} onClick={changeMusic} title="换一首歌，按新节拍重新排镜头（手动加的贴纸和手绘会尽量保留）">换歌…</button>
-                <button className="primary" disabled={busy || !!video} onClick={render}>{video ? '已渲染' : '渲染成片'}</button>
-                {video && <button className="primary" onClick={exportVideo}>导出…</button>}
-                {video && <button onClick={() => vc.showInFolder(video.video)}>打开所在文件夹</button>}
-              </div>
-            </div>
-
-            <div className="stage">
-              <div className="viewer">
-                <div className="preview" style={{ aspectRatio: `${aw} / ${ah}`, '--ar': aw / ah }}>
-                  {shown ? (
-                    <video key={shown.video} ref={videoRef} src={mediaUrl(shown.video)} controls
-                           onSeeked={(e) => !playing && setTime(e.currentTarget.currentTime)}
-                           onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
-                           onLoadedMetadata={(e) => { e.currentTarget.currentTime = Math.min(time, plan.duration - 0.05) }} />
-                  ) : (
-                    <div className="ph">{busy ? (job?.preview ? '正在生成预览…' : job?.kind === 'render' ? '渲染中…' : '处理中…') : '预览会显示在这里'}</div>
-                  )}
-                  {myDraft && plan.shots[selected] && (
-                    <StickerOverlay shot={plan.shots[selected]} draft={myDraft} track={track} time={time} aspect={[aw, ah]}
-                                    image={looks.stickers.find((x) => x.id === myDraft.id)?.preview} keySel={keySel}
-                                    onPlace={placeAt} onMoveKey={moveKey} onSelectKey={setKeySel}
-                                    ghost={draftDirty || !shown} />
-                  )}
-                  {shown && !video && <span className="badge">预览 · 低清{plan.shots.some((s) => s.sticker_at || s.drawn?.manual) ? '，手动加的效果已包含，自动的在成片里才有' : '，自动贴纸 / 手绘在成片里才有'}</span>}
-                </div>
-                <p className="viewer-note">{video ? `${fileName(video.video)} · ${video.duration}s` : '满意的话点「渲染成片」出高清版，带全部贴纸和手绘。'}</p>
-              </div>
-
-              <div className="side-pane">
-                <div className="tabs">
-                  <button className={tab === 'shot' ? 'on' : ''} onClick={() => setTab('shot')}>镜头</button>
-                  <button className={tab === 'list' ? 'on' : ''} onClick={() => setTab('list')}>列表</button>
-                </div>
-                {tab === 'shot' && (selected != null && plan.shots[selected] ? (
-                  <Inspector plan={plan} index={selected} looks={looks} usableClips={usableClips} time={time} busy={busy}
-                             onSwap={swapShot} onApply={applyShot} onCheck={checkShot} getStill={getStill}
-                             stickerName={(x) => stickerLabel(x, looks)} onClose={() => setSelected(null)}
-                             draft={myDraft} setDraft={(d) => setDraft(typeof d === 'function' ? d : d && { ...d, index: selected })}
-                             keySel={keySel} setKeySel={setKeySel} onPlace={placeAt} onSeek={seek} track={track} />
-                ) : (
-                  <div className="empty-pane">
-                    <p>在下面的时间线上点一个镜头，就能在这里：</p>
-                    <ul><li>换素材</li><li>在画面上点一下放贴纸（跟着走 / 固定）</li><li>把这个镜头改成手绘</li></ul>
-                  </div>
-                ))}
-                {tab === 'list' && (
-                  <div className="table-wrap">
-                    <table>
-                      <thead><tr><th>#</th><th>时间</th><th>类型</th><th>素材</th><th>特效</th></tr></thead>
-                      <tbody>
-                        {plan.shots.map((s, i) => (
-                          <tr key={i} className={selected === i ? 'sel' : ''} onClick={() => selectShot(i)}>
-                            <td>{i + 1}</td>
-                            <td>{s.t_start.toFixed(2)}–{s.t_end.toFixed(2)}</td>
-                            <td><i className="chip" style={{ background: ROLES[s.role]?.[1] }} />{ROLES[s.role]?.[0] || s.role}</td>
-                            <td>{s.clip}</td>
-                            <td>{s.sticker ? stickerLabel(s.sticker, looks) : s.drawn ? `手绘 ${s.drawn.label}` : ''}{(s.sticker_at || s.drawn?.manual) ? ' ✎' : ''}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <Timeline plan={plan} thumbs={thumbs} wave={wave} time={time} onSeek={seek} selected={selected}
-                      onSelect={selectShot} stickerName={(x) => stickerLabel(x, looks)}
-                      draft={myDraft} onDraft={setDraft} onKeySelect={setKeySel} onCutMove={moveCut} busy={busy}
-                      styleName={(id) => looks.drawn_styles.find((d) => d.id === (id || 'lineart'))?.name || '线稿上色'} />
-          </div>
-        )}
-      </main>
+      <Timeline plan={plan} thumbs={thumbs} wave={wave} time={time} onSeek={setTime} selected={selected}
+                onSelect={setSelected} stickerName={stickerName} styleName={styleName} draft={myDraft} onInOut={onInOut}
+                onCutMove={moveCut} busy={busy} pending={live?.pending || []} live={live} looks={looks} />
+      {toastsEl}
     </div>
   )
 }
