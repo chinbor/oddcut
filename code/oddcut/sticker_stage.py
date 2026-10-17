@@ -11,6 +11,10 @@ import cv2
 
 from .ffmpeg_utils import probe, read_frames
 
+import threading
+
+VISION = threading.RLock()   # YOLO / YOLOE models are shared module globals: one user at a time
+
 TAG_FPS = 1.0
 MIN_AREA = 0.04          # object must cover >= 4% of the (output-aspect-cropped) frame to be worth a sticker
 # share of the object's box that must survive the crop: doodles sit above an animal's head, so the

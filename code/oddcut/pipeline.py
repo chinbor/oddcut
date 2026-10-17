@@ -548,7 +548,7 @@ def carry_manual(old: Plan, new: Plan, analysis: Analysis) -> tuple[Plan, list[s
 
 def render_plan(p: Plan, out_path: str | Path, keep_temp: bool = False,
                 progress: Progress | None = None, preview: bool = False,
-                effects_cache: str | Path | None = None) -> dict:
+                effects_cache: str | Path | None = None, effects: str | None = None) -> dict:
     """Render the video and write <out>.timeline.json next to it. Returns the timeline dict.
     `preview`: low-res, fast encode, sticker / drawn shots as plain footage unless already in the cache.
     `effects_cache`: folder to keep rendered sticker / drawn shots in, so re-renders reuse them."""
@@ -556,7 +556,7 @@ def render_plan(p: Plan, out_path: str | Path, keep_temp: bool = False,
     out = Path(out_path)
     work = out.parent / f".{out.stem}_work"
     total = render(p.shots, p.music, p.template, Path(p.template_path).parent, out, work, report,
-                   preview=preview, effects_cache=Path(effects_cache) if effects_cache else None)
+                   preview=preview, effects_cache=Path(effects_cache) if effects_cache else None, effects=effects)
     timeline = {
         "output": str(out), "duration": round(total, 3), "tempo": round(p.music.tempo, 2),
         "music": p.music.path, "music_start": p.music.start, "seed": p.seed,

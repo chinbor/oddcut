@@ -36,6 +36,11 @@ Job parameters (paths are absolute or relative to the project root):
     cut      analysis, plan, k, t, [snap]  -> like plan; moves the cut before shot k to t (snapped to a beat)
     retime   analysis, plan  -> like plan; the same edit on the analysis' song, cuts snapped to its beats
     plan also takes carry_from: an earlier plan whose hand edits move over (e.g. after a music job)
+    live     plan  -> a preview right away without the effects not rendered yet, then each missing sticker /
+             drawn shot is rendered and a new preview published: job "partial" = {video, done, total,
+             pending: [shot indexes], failed}. Cancel it when the plan changes.
+    GET  /api/folder?path=D          {count}: video files in a folder (新建 page)
+    GET  /api/songs?near=F           audio files next to F (the music library)
 
 Clip analyses (incl. the sticker / drawn checks, per output size), song analyses and rendered sticker /
 drawn shots are cached under output/app/cache, so the same footage or song is only analyzed once and a
@@ -76,6 +81,7 @@ class Job:
         self.stages: dict[str, dict] = {}   # stage -> latest event
         self.messages: list[str] = []
         self.result: dict | None = None
+        self.partial: dict | None = None    # live preview: the latest finished state while it runs
         self.error: str | None = None
         self.created = time.time()
         self.finished: float | None = None
@@ -98,6 +104,7 @@ class Job:
         with self._lock:
             return {"id": self.id, "kind": self.kind, "status": self.status, "stages": dict(self.stages),
                     "messages": list(self.messages[-20:]), "result": self.result, "error": self.error,
+                    "partial": self.partial,
                     "elapsed": round((self.finished or time.time()) - self.created, 1)}
 
 
@@ -176,7 +183,9 @@ def run_analyze(job: Job) -> dict:
     p = job.params
     opts = Options(aspect=p.get("aspect"), duration=p.get("duration"), music_start=p.get("music_start"),
                    stickers=p.get("stickers", True), drawn=p.get("drawn", True))
-    a = analyze(_path(p["clips"]), _path(p["music"]), _template_path(p.get("template")), opts, job.on_progress,
+    from .sticker_stage import VISION
+    with VISION:
+        a = analyze(_path(p["clips"]), _path(p["music"]), _template_path(p.get("template")), opts, job.on_progress,
                 cache_dir=CACHE_DIR / "clips")
     out = _work_dir(p) / "analysis.json"
     save_analysis(a, out)
@@ -220,6 +229,47 @@ def run_shot(job: Job) -> dict:
     return _plan_result(pl, out, notes)
 
 
+def run_live(job: Job) -> dict:
+    """Quick preview first, then fill in the sticker / drawn shots one by one (see the docstring at the top)."""
+    from .formats import output_size
+    from .render import effect_files, preview_size, render_effect
+    p = job.params
+    plan_path = _path(p["plan"])
+    pl = load_plan(plan_path)
+    cache = CACHE_DIR / "effects"
+    h = preview_size(*output_size(pl.template))[1]
+    stem = plan_path.stem.replace("plan", "preview")
+    made: list[Path] = []
+
+    def publish(tag: str) -> Path:
+        out = _unique(plan_path.parent / f"{stem}_{tag}.mp4")
+        render_plan(load_plan(plan_path), out, preview=True, effects_cache=cache, effects="cached")
+        for old in made[:-1]:                 # keep the one on screen; older ones go (if the player let go)
+            try:
+                old.unlink()
+                old.with_suffix(".timeline.json").unlink(missing_ok=True)
+            except OSError:
+                pass
+        made.append(out)
+        return out
+
+    pending = [i for i, s in enumerate(pl.shots) if (s.drawn or s.sticker)
+               and not any(f.exists() for f in effect_files(s, pl.template, cache, h))]
+    job.on_progress(ProgressEvent("live", "quick", 0, 1))
+    job.partial = {"video": str(publish("quick")), "done": 0, "total": len(pending), "pending": pending, "failed": []}
+    job.on_progress(ProgressEvent("live", "effects", 0, len(pending)))
+    failed = []
+    for n, i in enumerate(pending):
+        s = pl.shots[i]
+        ok = render_effect(s, i, pl.template, plan_path.parent / f".{stem}_fx", cache, h)
+        if not ok:
+            failed.append(i)
+        job.on_progress(ProgressEvent("live", "effects", n + 1, len(pending)))   # raises if cancelled
+        job.partial = {"video": str(publish(f"fx{n + 1}")) if ok else job.partial["video"], "done": n + 1,
+                       "total": len(pending), "pending": pending[n + 1:], "failed": failed}
+    return job.partial
+
+
 def run_cut(job: Job) -> dict:
     p = job.params
     plan_path = _path(p["plan"])
@@ -245,9 +295,11 @@ def run_check(job: Job) -> dict:
     p = job.params
     pl = load_plan(_path(p["plan"]))
     s = pl.shots[int(p["index"])]
+    from .sticker_stage import VISION
     w, h = output_size(pl.template)
     job.on_progress(ProgressEvent("check", "check", 0, 1))
-    r = check_shot(s.clip.path, s.src_start, w / h, p.get("box"))
+    with VISION:
+        r = check_shot(s.clip.path, s.src_start, w / h, p.get("box"))
     if r.get("image") is not None:
         r["image"] = _data_url(r["image"])
     job.on_progress(ProgressEvent("check", "check", 1, 1))
@@ -373,7 +425,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "retime": run_retime}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None
@@ -472,10 +524,20 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         parts = self.path.split("?")[0].strip("/").split("/")
-        if parts[:1] == ["api"] and len(parts) == 2 and parts[1] in ("thumbs", "still", "waveform"):
+        if parts[:1] == ["api"] and len(parts) == 2 and parts[1] in ("thumbs", "still", "waveform", "folder", "songs"):
             from urllib.parse import parse_qs, urlsplit
             q = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
             try:
+                if parts[1] == "folder":
+                    from .analyze import VIDEO_EXTS
+                    d = _path(q["path"])
+                    n = sum(1 for f in d.iterdir() if f.suffix.lower() in VIDEO_EXTS) if d and d.is_dir() else 0
+                    return self._send(200, {"count": n, "name": d.name if d else ""})
+                if parts[1] == "songs":
+                    f = _path(q["near"])
+                    exts = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+                    songs = sorted(str(x) for x in f.parent.iterdir() if x.suffix.lower() in exts) if f else []
+                    return self._send(200, {"songs": songs})
                 plan_path = _path(q["plan"])
                 if parts[1] == "thumbs":
                     return self._send(200, {"thumbs": plan_thumbs(plan_path)})

@@ -64,9 +64,21 @@ def grade_filter(grade: dict, template_dir: Path, grain: bool = True) -> str:
     return ",".join(chain)
 
 
+def _part_key(shot: Shot, src: tuple[str, float], w: int, h: int, fps: float, grade: str, fade_out: float,
+              preview: bool) -> str:
+    st = os.stat(src[0])
+    return hashlib.sha1(json.dumps([os.path.abspath(src[0]), st.st_size, st.st_mtime_ns, round(src[1], 4), shot.frames,
+                                    w, h, fps, grade, fade_out, preview]).encode()).hexdigest()[:20]
+
+
 def _render_shot(i: int, shot: Shot, src: tuple[str, float], out_dir: Path, w: int, h: int, fps: float,
-                 grade: str, fade_out: float, preview: bool = False) -> Path:
-    """`src` = (path, start): the original clip, or a pre-rendered sticker clip starting at 0."""
+                 grade: str, fade_out: float, preview: bool = False, parts_cache: Path | None = None) -> Path:
+    """`src` = (path, start): the original clip, or a pre-rendered sticker clip starting at 0.
+    `parts_cache`: finished shots are kept there and reused (the app re-renders its preview after every edit;
+    only the shots that changed are encoded again)."""
+    cached = parts_cache / f"{_part_key(shot, src, w, h, fps, grade, fade_out, preview)}.mp4" if parts_cache else None
+    if cached is not None and cached.exists():
+        return cached
     out = out_dir / f"shot_{i:03d}.mp4"
     vf = [
         f"fps={fps}",
@@ -88,7 +100,7 @@ def _render_shot(i: int, shot: Shot, src: tuple[str, float], out_dir: Path, w: i
          "-pix_fmt", "yuv420p",
          "-color_range", "tv", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
          "-r", str(fps), "-video_track_timescale", "90000", str(out)])
-    return out
+    return _keep(out, cached)
 
 
 def _keep(tmp: Path, cached: Path | None) -> Path:
@@ -100,14 +112,90 @@ def _keep(tmp: Path, cached: Path | None) -> Path:
     return cached
 
 
+def _is_manual(s: Shot) -> bool:
+    return bool(s.sticker_at) or bool(s.drawn and s.drawn.get("manual"))
+
+
+def _effect_params(s: Shot, tpl: dict, eh: int) -> tuple:
+    """Everything a rendered sticker / drawn shot depends on (with the source file: its cache key).
+    `eh`: the height hand-made effects are rendered at (preview size in previews)."""
+    full_w, full_h = output_size(tpl)
+    fps = float(tpl["output"]["fps"])
+    background = tpl.get("drawn_opening", {}).get("background", "real")
+    if s.drawn:
+        params = ("drawn", s.src_start, s.drawn["reveal_at"], s.drawn["tail"] + 0.15, background, full_w, full_h,
+                  s.drawn.get("style", "lineart"), effect_rev("drawn"))
+        if _is_manual(s):
+            params += (s.drawn.get("box"), bool(s.drawn.get("force")), eh)
+        return params
+    if s.sticker_at:
+        return ("placed", s.src_start, s.frames / fps + 0.3, s.sticker, json.dumps(s.sticker_at, sort_keys=True),
+                full_w, full_h, eh, effect_rev("manual"))
+    return ("sticker", s.src_start, s.frames / fps + 0.3, s.sticker, full_w, full_h,
+            effect_rev("cartoon" if "@" in s.sticker else "sticker"))
+
+
+def effect_files(s: Shot, tpl: dict, effects_cache: Path | None, preview_h: int | None) -> list[Path]:
+    """Cache files that could stand in for this shot's effect, best first. Hand-made effects exist at preview
+    size and at full size; a preview can use either, a full render only the full-size one."""
+    if effects_cache is None or not (s.drawn or s.sticker):
+        return []
+    full_h = output_size(tpl)[1]
+    sizes = [preview_h, full_h] if preview_h and _is_manual(s) else [full_h]
+    return [effects_cache / f"{_effect_key(s.clip.path, *_effect_params(s, tpl, eh))}.mp4" for eh in sizes]
+
+
+def render_effect(s: Shot, i: int, tpl: dict, work_dir: Path, effects_cache: Path | None,
+                  preview_h: int | None = None, report: Reporter | None = None) -> str | None:
+    """Render one sticker / drawn shot (hand-made ones at `preview_h` if given, the rest at full size) and keep
+    it in the cache. Returns the file, or None when the effect can't be placed (then the shot is cleared of it
+    so the edit still renders, as before)."""
+    from .sticker_stage import VISION
+    report = report or Reporter(None)
+    full_w, full_h = output_size(tpl)
+    fps = float(tpl["output"]["fps"])
+    background = tpl.get("drawn_opening", {}).get("background", "real")
+    manual = _is_manual(s)
+    eh = preview_h if preview_h and manual else full_h
+    cached = effects_cache / f"{_effect_key(s.clip.path, *_effect_params(s, tpl, eh))}.mp4" if effects_cache else None
+    if cached is not None and cached.exists():
+        return str(cached)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    with VISION:                                  # the detectors aren't safe to run from two threads at once
+        if s.sticker_at:
+            tmp = work_dir / f"placed_{i:03d}.mp4"
+            if render_manual_sticker(s.clip.path, s.src_start, s.frames / fps + 0.3, s.sticker, s.sticker_at, tmp,
+                                     full_w / full_h, eh):
+                return str(_keep(tmp, cached))
+            return None
+        if s.drawn:
+            tmp = work_dir / f"drawn_{i:03d}.mp4"
+            if render_drawn_source(s.clip.path, s.src_start, s.drawn["reveal_at"], s.drawn["tail"] + 0.15, tmp,
+                                   background, full_w / full_h, eh, s.drawn.get("style", "lineart"), s.drawn.get("box"),
+                                   bool(s.drawn.get("force"))):
+                return str(_keep(tmp, cached))
+            report("render", "effects", 0, 0, f"drawn opening not possible on {s.clip.name}: falling back to a plain hook")
+            s.drawn = None
+            return None
+        tmp = work_dir / f"sticker_{i:03d}.mp4"
+        if render_sticker_source(s.clip.path, s.src_start, s.frames / fps + 0.3, s.sticker, tmp, full_w / full_h):
+            return str(_keep(tmp, cached))
+        report("render", "effects", 0, 0, f"sticker '{s.sticker}' not placed on shot {i} ({s.clip.name}): target not found")
+        s.sticker = None
+        return None
+
+
 def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
            out_path: Path, work_dir: Path, report: Reporter | None = None,
-           preview: bool = False, effects_cache: Path | None = None) -> float:
+           preview: bool = False, effects_cache: Path | None = None, effects: str | None = None) -> float:
     """`music` needs .path and .start (a Music, or the MusicRef a saved plan loads into).
-    `preview`: small and fast; sticker / drawn shots come from `effects_cache` if there, else plain, except
-    hand-made ones (placed sticker, drawn shot chosen in the app): those are rendered at preview size.
-    `effects_cache`: rendered sticker / drawn shots are kept there and reused by later renders."""
+    `preview`: small and fast. `effects_cache`: rendered sticker / drawn shots (and, in previews, finished
+    shots) are kept there and reused by later renders.
+    `effects`: "all" renders every sticker / drawn shot that isn't cached (default for full renders);
+    "manual" (default for previews) only the hand-made ones, at preview size; "cached" none: shots whose
+    effect isn't in the cache yet show plain footage (the app's quick preview, filled in afterwards)."""
     report = report or Reporter(None)
+    effects = effects or ("manual" if preview else "all")
     full_w, full_h = output_size(tpl)
     w, h = preview_size(full_w, full_h) if preview else (full_w, full_h)
     fps = float(tpl["output"]["fps"])
@@ -115,64 +203,29 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
     outro = next(s for s in tpl["structure"] if s["section"] == "outro")
     fade = float(outro.get("fade_out", 0.6))
     work_dir.mkdir(parents=True, exist_ok=True)
+    parts_cache = effects_cache / "parts" if preview and effects_cache else None
 
     # Sticker shots first (sequential: the detector is already multithreaded). They are cropped to the
     # output aspect before tracking so the sticker can't land in the part the crop throws away.
     sources = [(s.clip.path, s.src_start) for s in shots]
-    effects = [i for i, s in enumerate(shots) if s.drawn or s.sticker]
-    report("render", "effects", 0, len(effects))
-    background = tpl.get("drawn_opening", {}).get("background", "real")
-    for n, i in enumerate(effects):
+    todo = [i for i, s in enumerate(shots) if s.drawn or s.sticker]
+    report("render", "effects", 0, len(todo))
+    for n, i in enumerate(todo):
         s = shots[i]
-        manual = bool(s.sticker_at) or bool(s.drawn and s.drawn.get("manual"))
-        eh = h if preview and manual else full_h          # hand-made effects: preview-size in previews
-        if s.drawn:
-            style = s.drawn.get("style", "lineart")
-            params = ("drawn", s.src_start, s.drawn["reveal_at"], s.drawn["tail"] + 0.15, background, full_w, full_h)
-            params += (style, effect_rev("drawn"))
-            if manual:
-                params += (s.drawn.get("box"), bool(s.drawn.get("force")), eh)
-        elif s.sticker_at:
-            params = ("placed", s.src_start, s.frames / fps + 0.3, s.sticker, json.dumps(s.sticker_at, sort_keys=True),
-                      full_w, full_h, eh, effect_rev("manual"))
-        else:
-            params = ("sticker", s.src_start, s.frames / fps + 0.3, s.sticker, full_w, full_h,
-                      effect_rev("cartoon" if "@" in s.sticker else "sticker"))
-        cached = effects_cache / f"{_effect_key(s.clip.path, *params)}.mp4" if effects_cache else None
-        if cached is not None and cached.exists():
-            sources[i] = (str(cached), 0.0)
-        elif preview and not manual:
-            pass                            # preview: plain footage in its place
-        elif s.sticker_at:
-            tmp = work_dir / f"placed_{i:03d}.mp4"
-            if render_manual_sticker(s.clip.path, s.src_start, s.frames / fps + 0.3, s.sticker, s.sticker_at, tmp,
-                                     full_w / full_h, eh):
-                sources[i] = (str(_keep(tmp, cached)), 0.0)
-        elif s.drawn:
-            tmp = work_dir / f"drawn_{i:03d}.mp4"
-            if render_drawn_source(s.clip.path, s.src_start, s.drawn["reveal_at"], s.drawn["tail"] + 0.15, tmp,
-                                   background, full_w / full_h, eh, style, s.drawn.get("box"),
-                                   bool(s.drawn.get("force"))):
-                sources[i] = (str(_keep(tmp, cached)), 0.0)
-            else:
-                report("render", "effects", n, len(effects),
-                       f"drawn opening not possible on {s.clip.name}: falling back to a plain hook")
-                s.drawn = None
-        else:
-            tmp = work_dir / f"sticker_{i:03d}.mp4"
-            if render_sticker_source(s.clip.path, s.src_start, s.frames / fps + 0.3, s.sticker, tmp, full_w / full_h):
-                sources[i] = (str(_keep(tmp, cached)), 0.0)
-            else:
-                report("render", "effects", n, len(effects),
-                       f"sticker '{s.sticker}' not placed on shot {i} ({s.clip.name}): target not found")
-                s.sticker = None
-        report("render", "effects", n + 1, len(effects))
+        have = next((f for f in effect_files(s, tpl, effects_cache, h if preview else None) if f.exists()), None)
+        if have is not None:
+            sources[i] = (str(have), 0.0)
+        elif effects == "all" or (effects == "manual" and _is_manual(s)):
+            done = render_effect(s, i, tpl, work_dir, effects_cache, h if preview else None, report)
+            if done:
+                sources[i] = (done, 0.0)
+        report("render", "effects", n + 1, len(todo))
 
     report("render", "shots", 0, len(shots))
     parts: list[Path | None] = [None] * len(shots)
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {pool.submit(_render_shot, i, s, sources[i], work_dir, w, h, fps, grade,
-                               fade if s.role == "outro" else 0.0, preview): i for i, s in enumerate(shots)}
+                               fade if s.role == "outro" else 0.0, preview, parts_cache): i for i, s in enumerate(shots)}
         try:
             for n, fut in enumerate(as_completed(futures)):
                 parts[futures[fut]] = fut.result()
