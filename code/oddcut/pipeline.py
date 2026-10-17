@@ -311,7 +311,22 @@ def _check_place(place: dict) -> dict:
     return out
 
 
-def edit_shot(analysis: Analysis, p: Plan, index: int, sticker=KEEP, drawn=KEEP) -> tuple[Plan, list[str]]:
+def check_grow(g: dict) -> dict:
+    """万物生长 settings: layers 3 or 4, a layer every beat or half-beat, motion blur 0..1.5."""
+    stagger = g.get("stagger", "beat")
+    if stagger not in ("beat", "half"):
+        raise ValueError(f"unknown stagger {stagger!r}")
+    return {"layers": 4 if int(g.get("layers", 3)) >= 4 else 3, "stagger": stagger,
+            "blur": round(min(1.5, max(0.0, float(g.get("blur", 1.0)))), 2)}
+
+
+def grow_all(p: Plan, g: dict | None) -> Plan:
+    """全片万物生长: every shot grows in (the first out of black), or none does (g=None)."""
+    g = check_grow(g) if g else None
+    return replace(p, shots=[replace(s, grow=g) for s in p.shots])
+
+
+def edit_shot(analysis: Analysis, p: Plan, index: int, sticker=KEEP, drawn=KEEP, grow=KEEP) -> tuple[Plan, list[str]]:
     """Hand edits from the app's shot inspector. Returns the new plan and notes for the user (Chinese).
     sticker: None = no sticker; {"id", "mode", "keys", "in", "out"} = placed by hand (any catalog sticker).
     drawn:   None = not drawn; {"style", "box"?, "force"?} = draw this shot. A drawn shot needs time to draw,
@@ -324,6 +339,8 @@ def edit_shot(analysis: Analysis, p: Plan, index: int, sticker=KEEP, drawn=KEEP)
     shots = [replace(s) for s in p.shots]
     s = shots[index]
     notes: list[str] = []
+    if grow is not KEEP:
+        s.grow = check_grow(grow) if grow else None
     if sticker is not KEEP:
         if sticker is None:
             s.sticker, s.sticker_at = None, None
@@ -664,7 +681,7 @@ def carry_manual(old: Plan, new: Plan, analysis: Analysis) -> tuple[Plan, list[s
 
 def render_plan(p: Plan, out_path: str | Path, keep_temp: bool = False,
                 progress: Progress | None = None, preview: bool = False,
-                effects_cache: str | Path | None = None, effects: str | None = None) -> dict:
+                effects_cache: str | Path | None = None, effects: str | None = None, grow: str | None = None) -> dict:
     """Render the video and write <out>.timeline.json next to it. Returns the timeline dict.
     `preview`: low-res, fast encode, sticker / drawn shots as plain footage unless already in the cache.
     `effects_cache`: folder to keep rendered sticker / drawn shots in, so re-renders reuse them."""
@@ -673,7 +690,7 @@ def render_plan(p: Plan, out_path: str | Path, keep_temp: bool = False,
     work = out.parent / f".{out.stem}_work"
     total = render(p.shots, p.music, p.template, Path(p.template_path).parent, out, work, report,
                    preview=preview, effects_cache=Path(effects_cache) if effects_cache else None, effects=effects,
-                   overlays=p.looks.get("overlays"))
+                   overlays=p.looks.get("overlays"), grow=grow)
     timeline = {
         "output": str(out), "duration": round(total, 3), "tempo": round(p.music.tempo, 2),
         "music": p.music.path, "music_start": p.music.start, "seed": p.seed,
@@ -870,6 +887,6 @@ def load_plan(path: str | Path) -> Plan:
         raise ValueError(f"{path} is not an oddcut plan file")
     shots = [Shot(role=s["role"], clip=ClipRef(s["clip_path"]), src_start=s["src_start"], t_start=s["t_start"],
                   t_end=s["t_end"], frames=s["frames"], sticker=s.get("sticker"), drawn=s.get("drawn"),
-                  sticker_at=s.get("sticker_at"))
+                  sticker_at=s.get("sticker_at"), grow=s.get("grow"))
              for s in d["shots"]]
     return Plan(d["template"], d["template_path"], MusicRef(**d["music"]), d["seed"], shots, d.get("looks") or {})

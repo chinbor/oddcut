@@ -11,7 +11,7 @@ const MODES = [
 export default function Properties({ shot, index, thumb, looks, usableClips, draft, check, busy, onClose, onSwap,
                                      onRemoveSticker, onMode, onSize, onSizeCommit, onDrawn, onStyle, onForceDrawn,
                                      onBoxMode, stickerName, keyAt, onPrevKey, onToggleKey, onNextKey, recordArmed,
-                                     onRecordArm, onMoveShot, shotCount }) {
+                                     onRecordArm, onMoveShot, shotCount, onGrow, growDefault, onGrowAll }) {
   const [pickClip, setPickClip] = useState(false)
   const len = shot.t_end - shot.t_start
   const sid = shot.sticker ? shot.sticker.split('@')[0] : null
@@ -104,6 +104,42 @@ export default function Properties({ shot, index, thumb, looks, usableClips, dra
           </>
         ) : (
           <p className="empty">还没有贴纸。从左边贴纸库拖一个到画面上，或点一下加到这个镜头。</p>
+        )}
+      </section>
+
+      <section>
+        <h3>转场</h3>
+        <label className="switch-row">
+          <span><b>万物生长</b><small>{index === 0 ? '从黑底' : '从上一个镜头上'}一层一层往上长出来</small></span>
+          <input type="checkbox" className="switch" checked={!!shot.grow} disabled={busy} onChange={(e) => onGrow(e.target.checked ? growDefault : null)} />
+        </label>
+        {shot.grow && (
+          <>
+            <div className="field">
+              <span className="field-label">分几层</span>
+              <div className="segmented">
+                {[3, 4].map((n) => (
+                  <button key={n} className={shot.grow.layers === n ? 'on' : ''} disabled={busy} onClick={() => onGrow({ ...shot.grow, layers: n })}>{n} 层</button>
+                ))}
+              </div>
+            </div>
+            <div className="field">
+              <span className="field-label">节奏</span>
+              <div className="segmented">
+                {[['beat', '一拍一层'], ['half', '半拍一层（更快）']].map(([id, label]) => (
+                  <button key={id} className={shot.grow.stagger === id ? 'on' : ''} disabled={busy} onClick={() => onGrow({ ...shot.grow, stagger: id })}>{label}</button>
+                ))}
+              </div>
+            </div>
+            <label className="slider-row">
+              <span>动感模糊</span>
+              <input type="range" min="0" max="1.5" step="0.1" defaultValue={shot.grow.blur} key={`${index}-${shot.grow.blur}`} disabled={busy}
+                     onPointerUp={(e) => onGrow({ ...shot.grow, blur: Number(e.currentTarget.value) })}
+                     onKeyUp={(e) => onGrow({ ...shot.grow, blur: Number(e.currentTarget.value) })} />
+              <b>{Math.round(shot.grow.blur * 100)}%</b>
+            </label>
+            <p className="caption">时间轴上这个镜头开头的绿条就是生长的过程，小刻度是每一层开始的节拍。<button className="link inline" disabled={busy} onClick={onGrowAll}>用到全片</button></p>
+          </>
         )}
       </section>
 

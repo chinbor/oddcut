@@ -8,6 +8,7 @@ import Timeline from './Timeline.jsx'
 import Viewer from './Viewer.jsx'
 
 const vc = window.oddcut
+const GROW_DEFAULT = { layers: 3, stagger: 'beat', blur: 1 }           // 万物生长: 3 layers, one per beat, full motion blur
 const q = (s) => encodeURIComponent(s)
 const mediaUrl = (p) => `media://v/?p=${encodeURIComponent(p)}`
 const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
@@ -34,7 +35,7 @@ export default function App() {
   const [templates, setTemplates] = useState([])
   const [looks, setLooks] = useState({ stickers: [], sticker_groups: [], drawn_styles: [] })
   const [view, setView] = useState('new')
-  const [form, setForm] = useState({ clips: '', music: '', template: '', aspect: '9:16', duration: 18, autoStickers: true, drawn: true })
+  const [form, setForm] = useState({ clips: '', music: '', template: '', aspect: '9:16', duration: 18, autoStickers: true, drawn: true, grow: false })
   const [folderInfo, setFolderInfo] = useState(null)
   const [analysis, setAnalysis] = useState(null)
   const [plan, setPlan] = useState(null)
@@ -185,7 +186,7 @@ export default function App() {
     const a = await runJob({ kind: 'analyze', clips: form.clips, music: form.music, template: form.template, aspect: form.aspect,
                              duration: Number(form.duration), stickers: form.autoStickers, drawn: form.drawn })
     setAnalysis(a)
-    const p = await runJob({ kind: 'plan', analysis: a.analysis, stickers: form.autoStickers ? allStickers() : [] })
+    const p = await runJob({ kind: 'plan', analysis: a.analysis, stickers: form.autoStickers ? allStickers() : [], grow: form.grow ? GROW_DEFAULT : null })
     setPast([]); setFuture([]); setSelected(null); setTime(0); setPreviewSrc(null)
     setView('editor')
     loadPlan(p)
@@ -199,6 +200,12 @@ export default function App() {
   const localT = (i) => { const s = plan.shots[i]; const fps = plan.fps || 30; return Math.round(Math.min(Math.max(0, time - s.t_start), s.t_end - s.t_start - 0.01) * fps) / fps }
   const applyShot = guard(async (index, change) => commit(await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, ...change })))
   const swapShot = guard(async (index, clip) => commit(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip })))
+  // 万物生长 into one shot (cfg = settings, null = off) or into all of them
+  const applyGrow = guard(async (index, cfg) => commit(await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, grow: cfg })))
+  const growAll = guard(async (cfg) => {
+    commit(await runJob({ kind: 'grow', plan: plan.plan, grow: cfg }))
+    toast(cfg ? '全片都用了万物生长：每个镜头都会从下往上长出来' : '已去掉全片的万物生长')
+  })
   const moveCut = guard(async (k, t, snap) => commit(await runJob({ kind: 'cut', analysis: analysis.analysis, plan: plan.plan, k, t, snap })))
   // reorder: the shot keeps its footage and effects, the cuts re-snap to the beats
   const moveShot = guard(async (src, dst) => {
@@ -570,7 +577,10 @@ export default function App() {
       <Library looks={looks} activeSticker={shot?.sticker?.split('@')[0]} activeStyle={shot?.drawn ? shot.drawn.style || 'lineart' : null}
                onAddSticker={addSticker} onApplyStyle={applyStyle} music={{ path: analysis?.music?.path, name: analysis?.music?.name, tempo: analysis?.music?.tempo }}
                songs={songs} onPickSong={(s) => changeMusic(s)} onBrowseMusic={() => changeMusic()} busy={busy} rail={rail}
-               clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} onAddOverlay={(p) => addOverlay(p)} />
+               clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} onAddOverlay={(p) => addOverlay(p)}
+               growTarget={plan.shots[target()]?.grow ? target() + 1 : null}
+               onGrow={() => { const i = target(); setSelected(i); applyGrow(i, plan.shots[i].grow ? null : GROW_DEFAULT) }}
+               onGrowAll={(on) => growAll(on ? GROW_DEFAULT : null)} growAllOn={plan.shots.every((s) => s.grow)} />
 
       <Viewer src={previewSrc && mediaUrl(previewSrc)} videoRef={videoRef} time={time} onTime={setTime} playing={playing} setPlaying={setPlaying}
               duration={plan.duration} fps={plan.fps || 30} aspect={[aw, ah]} shot={shot} draft={myDraft} track={track}
@@ -594,6 +604,7 @@ export default function App() {
                     draft={myDraft && { ...myDraft, curSize }} check={check && check.index === selected ? check : null} busy={busy}
                     onClose={() => setSelected(null)} onSwap={(clip) => swapShot(selected, clip)}
                     onMoveShot={(d) => moveShot(selected, selected + d)} shotCount={plan.shots.length}
+                    onGrow={(cfg) => applyGrow(selected, cfg)} growDefault={GROW_DEFAULT} onGrowAll={() => growAll(shot.grow || GROW_DEFAULT)}
                     onRemoveSticker={() => applyShot(selected, { sticker: null })}
                     onMode={(mode) => { const { index, ...place } = myDraft; applyShot(selected, { sticker: { ...place, mode } }) }}
                     onSize={(v) => editDraft({ size: v })} onSizeCommit={commitDraft}

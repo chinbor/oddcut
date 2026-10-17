@@ -22,6 +22,7 @@ class Shot:
     sticker: str | None = None   # eyes | anger | question | car@object ... (see looks.py)
     drawn: dict | None = None    # drawn-reveal opening: {"reveal_at": s, "tail": s, "label": ...}
     sticker_at: dict | None = None   # placed by hand in the app: {mode, keys: [{t, x, y, size}], in, out}
+    grow: dict | None = None         # 万物生长 into this shot: {layers: 3|4, stagger: beat|half, blur} (growth.py)
 
     def to_dict(self) -> dict:
         d = {"role": self.role, "clip": self.clip.name, "src_start": round(self.src_start, 3),
@@ -29,6 +30,8 @@ class Shot:
              "sticker": self.sticker, "drawn": self.drawn}
         if self.sticker_at is not None:
             d["sticker_at"] = self.sticker_at
+        if self.grow is not None:
+            d["grow"] = self.grow
         return d
 
 

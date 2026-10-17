@@ -138,7 +138,7 @@ button.huge { height: 52px; font-size: 16px; justify-content: center; border-rad
 
 /* ---------------------------------------------------------------- library */
 .library { grid-area: lib; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; position: relative; }
-.lib-tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--line); flex: none; }
+.lib-tabs { display: grid; grid-template-columns: repeat(5, 1fr); border-bottom: 1px solid var(--line); flex: none; }
 .lib-tabs button { border: none; border-radius: 0; background: transparent; justify-content: center; padding: 12px 4px; color: var(--muted); border-bottom: 2px solid transparent; }
 .lib-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
 .lib-body { padding: 14px; overflow-y: auto; flex: 1; min-height: 0; }
@@ -423,3 +423,21 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .ov-box.show img, .ov-box.dragging img { display: block; }
 .ov-box.dragging, .sel-box:active { will-change: left, top, width, height; }
 .bar.ov.dragging { z-index: 9; box-shadow: 0 0 0 2px #a48bff, 0 8px 18px rgba(0,0,0,.5); cursor: grabbing; transition: none; }
+
+/* ---------------------------------------------------------------- 转场: 万物生长 */
+.lib-tabs button { padding: 12px 0; font-size: 12.5px; }
+.fx-card { width: 100%; flex-direction: column; align-items: stretch; gap: 8px; padding: 8px; border-radius: 12px; text-align: left; }
+.fx-card.on { border-color: #4fc79a; background: #18271f; }
+.fx-demo { position: relative; height: 92px; border-radius: 8px; overflow: hidden; background: #0c0d10; display: block; }
+.fx-demo i { display: block; position: absolute; left: 0; right: 0; bottom: 0; animation: grow-rise 2.4s cubic-bezier(.22, .9, .3, 1) infinite; transform: translateY(110%); }
+.fx-demo .g1 { height: 34%; background: linear-gradient(#c9a26b, #8a6a3e); clip-path: polygon(0 30%, 18% 10%, 35% 25%, 55% 0, 75% 20%, 100% 8%, 100% 100%, 0 100%); animation-delay: 0s; }
+.fx-demo .g2 { height: 70%; background: linear-gradient(#5d6f86, #3b4659); clip-path: polygon(0 40%, 10% 40%, 10% 15%, 22% 15%, 22% 35%, 38% 35%, 38% 0, 50% 0, 50% 30%, 66% 30%, 66% 12%, 80% 12%, 80% 38%, 100% 38%, 100% 100%, 0 100%); animation-delay: .35s; }
+.fx-demo .g3 { height: 100%; background: linear-gradient(#f2b37a, #7fa4d6); animation-delay: .7s; }
+@keyframes grow-rise { 0% { transform: translateY(110%); filter: blur(3px); } 12% { filter: blur(0); } 18%, 80% { transform: translateY(0); } 92%, 100% { transform: translateY(0); opacity: 0; } }
+.fx-text { display: flex; flex-direction: column; gap: 3px; }
+.fx-text b { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.fx-text small { line-height: 1.5; }
+.fx-on { color: #4fc79a !important; font-size: 11.5px; font-weight: 500; }
+.fx-all { margin-top: 12px; padding: 10px 12px; background: var(--raised); border-radius: 10px; }
+.grow-mark { position: absolute; left: 0; bottom: 0; height: 6px; background: rgba(79,199,154,.85); z-index: 1; pointer-events: none; border-radius: 0 3px 3px 0; }
+.grow-mark i { position: absolute; top: -4px; width: 2px; height: 10px; margin-left: -1px; background: #fff; border-radius: 1px; }

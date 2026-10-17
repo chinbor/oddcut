@@ -9,6 +9,19 @@ import Icon from './icons.jsx'
 // 切点对齐节拍 is on (Alt = the other way round); drag a sticker bar's ends or its keyframe diamonds.
 
 const LABEL_W = 92
+
+// 万物生长: when each layer starts and when the picture is complete (same formula as growth.timing)
+export function growTiming(length, beat, layers = 3, stagger = 'beat') {
+  let step = stagger === 'beat' ? beat : beat / 2
+  let rise = Math.min(0.45, Math.max(0.25, 0.9 * step))
+  const avail = Math.max(0.3, length - 0.15)
+  if ((layers - 1) * step + rise > avail) {
+    step = Math.max(0.08, (avail - rise) / Math.max(1, layers - 1))
+    if ((layers - 1) * step + rise > avail) rise = Math.max(0.15, avail - (layers - 1) * step)
+  }
+  const starts = Array.from({ length: layers }, (_, k) => k * step)
+  return { starts, rise, land: starts[layers - 1] + rise }
+}
 const fmtS = (t) => (Number.isInteger(t) ? `${t}s` : `${t.toFixed(1)}s`)
 
 export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot, aspect = 0.5625, wave, time, onSeek, selected, onSelect, stickerName, styleName,
@@ -318,7 +331,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
         <span className="legend"><i className="lg-on" />踩点的切点<i className="lg-off" />没踩点</span>
         <span className="spacer" />
         {live && live.total > live.done && (
-          <span className="live-note"><i className="spin" />正在把贴纸和手绘加进预览（{live.done} / {live.total}）</span>
+          <span className="live-note"><i className="spin" />正在把贴纸、手绘和转场加进预览（{live.done} / {live.total}）</span>
         )}
         <div className="zoom-btns" title="滚轮缩放（Shift + 滚轮左右移动）">
           <button className="icon" onClick={() => zoomTo(zoom / 1.5)} disabled={zoom <= 1} aria-label="缩小">−</button>
@@ -377,6 +390,14 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                      title={`镜头 ${i + 1} · ${s.clip} · ${(s.t_end - s.t_start).toFixed(1)} 秒（点一下单独播放，左右拖动调换顺序）`}>
                   <div className="strip">{filmstrip(i, w).map((src, k) => <img key={k} src={src} alt="" draggable={false} />)}</div>
                   <span className="num">{i + 1}</span>
+                  {s.grow && (() => {
+                    const g = growTiming(s.t_end - s.t_start, plan.beat || 60 / (wave?.tempo || 120), s.grow.layers, s.grow.stagger)
+                    return (
+                      <span className="grow-mark" style={{ width: g.land * scale }} title={`万物生长：${s.grow.layers} 层，${s.grow.stagger === 'beat' ? '一拍' : '半拍'}一层，${g.land.toFixed(2)} 秒长完`}>
+                        {g.starts.map((st, k) => <i key={k} style={{ left: st * scale }} />)}
+                      </span>
+                    )
+                  })()}
                   {w > 54 && <span className="dur">{(s.t_end - s.t_start).toFixed(1)}s</span>}
                   {pending.includes(i) && <span className="gen">生成中</span>}
                 </div>

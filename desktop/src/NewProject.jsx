@@ -73,6 +73,10 @@ export default function NewProject({ form, setForm, templates, folderInfo, music
               <span><b>手绘开场</b><small>素材里有合适的镜头时，开头先画再变回实拍</small></span>
               <input type="checkbox" className="switch" checked={form.drawn} onChange={(e) => set('drawn', e.target.checked)} disabled={busy} />
             </label>
+            <label className="switch-row">
+              <span><b>全片万物生长</b><small>每个镜头按画面里的东西分层，踩着节拍从下往上长出来，盖住上一个镜头</small></span>
+              <input type="checkbox" className="switch" checked={!!form.grow} onChange={(e) => set('grow', e.target.checked)} disabled={busy} />
+            </label>
           </div>
           <p className="note">用哪些贴纸、哪种手绘风格，生成后在编辑器左边的素材库里换。</p>
         </section>

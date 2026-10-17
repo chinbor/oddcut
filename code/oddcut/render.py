@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 
 from .ffmpeg_utils import run
@@ -27,7 +28,7 @@ def preview_size(w: int, h: int) -> tuple[int, int]:
 
 # the code that draws each kind of effect shot: part of the cache key, so editing it never reuses stale shots
 _EFFECT_CODE = {"sticker": ("stickers.py",), "cartoon": ("stickers.py", "cartoons.py"), "drawn": ("drawn_reveal.py",),
-                "manual": ("stickers.py", "cartoons.py", "sticker_stage.py")}
+                "manual": ("stickers.py", "cartoons.py", "sticker_stage.py"), "grow": ("growth.py",)}
 
 
 @functools.lru_cache(maxsize=None)
@@ -153,6 +154,61 @@ def _overlay_pass(video: Path, overlays: list[dict], w: int, h: int, fps: float,
     return out
 
 
+def _encode_args(fps: float, preview: bool) -> list[str]:
+    return ["-an", "-c:v", "libx264", "-preset", "ultrafast" if preview else "veryfast", "-crf", "28" if preview else "18",
+            "-pix_fmt", "yuv420p", "-color_range", "tv", "-color_primaries", "bt709", "-color_trc", "bt709",
+            "-colorspace", "bt709", "-r", str(fps), "-video_track_timescale", "90000"]
+
+
+def _grow_parts(shots: list[Shot], parts: list, sources: list, music, work_dir: Path, w: int, h: int, fps: float,
+                grade: str, fade: float, preview: bool, cache: Path | None, mode: str, report: Reporter) -> None:
+    """Replace the opening of every shot with .grow by its 万物生长 transition (growth.py): the previous shot
+    carries on underneath (rendered on from where it was cut, same look), the new one's layers rise over it."""
+    todo = [i for i, s in enumerate(shots) if s.grow]
+    if not todo:
+        return
+    from .growth import render_grow, timing
+    beat = float(getattr(music, "beat_period", 0) or 0) or 60.0 / float(getattr(music, "tempo", 120) or 120)
+    report("render", "grow", 0, len(todo))
+
+    def one(i: int):
+        s, g = shots[i], shots[i].grow
+        tm = timing(s.frames / fps, beat, int(g.get("layers", 3)), g.get("stagger", "beat"))
+        n_tr = min(s.frames, int(tm["land"] * fps) + 2)
+        prev = None
+        if i > 0:
+            ps = shots[i - 1]
+            prev = (replace(ps, frames=n_tr), (ps.clip.path, ps.src_start + ps.frames / fps))
+        fade_i = fade if s.role == "outro" else 0.0
+        key = hashlib.sha1(json.dumps([
+            _part_key(s, sources[i], w, h, fps, grade, fade_i, preview),
+            _part_key(prev[0], prev[1], w, h, fps, grade, 0.0, preview) if prev else None,
+            g, tm, effect_rev("grow")]).encode()).hexdigest()[:20]
+        cached = cache / f"grow_{key}.mp4" if cache else None
+        if cached is not None and cached.exists():
+            return cached
+        if mode != "all":
+            return None
+        prev_part = _render_shot(9000 + i, prev[0], prev[1], work_dir, w, h, fps, grade, 0.0, preview) if prev else None
+        out = work_dir / f"grow_{i:03d}.mp4"
+        render_grow(parts[i], prev_part, out, fps, w, h, s.frames, tm, int(g.get("layers", 3)),
+                    float(g.get("blur", 1.0)), _encode_args(fps, preview))
+        return _keep(out, cached)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:      # ffmpeg and OpenCV do the heavy work outside the GIL
+        futures = {pool.submit(one, i): i for i in todo}
+        try:
+            for n, fut in enumerate(as_completed(futures)):
+                done = fut.result()
+                if done is not None:
+                    parts[futures[fut]] = done
+                report("render", "grow", n + 1, len(todo))
+        except BaseException:
+            for fut in futures:
+                fut.cancel()
+            raise
+
+
 def _keep(tmp: Path, cached: Path | None) -> Path:
     """Move a freshly rendered effect shot into the cache (if there is one) and return where it is."""
     if cached is None:
@@ -238,14 +294,16 @@ def render_effect(s: Shot, i: int, tpl: dict, work_dir: Path, effects_cache: Pat
 def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
            out_path: Path, work_dir: Path, report: Reporter | None = None,
            preview: bool = False, effects_cache: Path | None = None, effects: str | None = None,
-           overlays: list[dict] | None = None) -> float:
+           overlays: list[dict] | None = None, grow: str | None = None) -> float:
     """`music` needs .path and .start (a Music, or the MusicRef a saved plan loads into).
     `preview`: small and fast. `effects_cache`: rendered sticker / drawn shots (and, in previews, finished
     shots) are kept there and reused by later renders.
     `effects`: "all" renders every sticker / drawn shot that isn't cached (default for full renders);
     "manual" (default for previews) only the hand-made ones, at preview size; "cached" none: shots whose
     effect isn't in the cache yet show plain footage (the app's quick preview, filled in afterwards).
-    `overlays`: picture-in-picture clips laid over the joined shots (see pipeline._check_overlays)."""
+    `overlays`: picture-in-picture clips laid over the joined shots (see pipeline._check_overlays).
+    `grow`: 万物生长 transitions (shots with .grow): "all" renders missing ones, "cached" only uses the cache
+    (default: "cached" when effects is "cached", else "all")."""
     report = report or Reporter(None)
     effects = effects or ("manual" if preview else "all")
     full_w, full_h = output_size(tpl)
@@ -286,6 +344,10 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
             for fut in futures:
                 fut.cancel()
             raise
+
+    _grow_parts(shots, parts, sources, music, work_dir, w, h, fps, grade, fade, preview,
+                parts_cache or (effects_cache / "grow" if effects_cache else None),
+                grow or ("cached" if effects == "cached" else "all"), report)
 
     concat_list = work_dir / "concat.txt"
     concat_list.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts), encoding="utf-8")

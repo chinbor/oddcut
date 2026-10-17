@@ -31,6 +31,8 @@ Job parameters (paths are absolute or relative to the project root):
     edit     analysis, plan, index, [clip]  -> like plan; swaps shot `index` to `clip` (or another good clip)
     shot     analysis, plan, index, [sticker], [drawn]  -> like plan + "notes"; hand edits of one shot
     overlays analysis, plan, overlays  -> like plan; the picture-in-picture clips (whole list, see pipeline)
+    grow     plan, grow                -> like plan; 万物生长 into every shot ({layers, stagger, blur}) or none (null)
+             (one shot: "shot" with grow; a new plan: "plan" with grow)
     move     analysis, plan, src, dst  -> like plan; shot src moved to position dst, cuts re-snapped to beats
              sticker: null | {id, mode: follow | fixed, keys: [{t, x, y, size}], in, out}
              drawn:   null | {style, box?, force?}   (a key left out = that part unchanged)
@@ -63,7 +65,7 @@ from . import __version__
 from .formats import ASPECTS
 from .paths import OUTPUT_DIR, PROJECT_ROOT, TEMPLATE_DIR
 from .pipeline import (KEEP, Options, analyze, carry_manual, edit_shot, has_manual, load_analysis, load_plan, move_cut, move_shot,
-                       plan, render_plan, replace_shot, retime, save_analysis, save_plan, set_overlays, with_music)
+                       plan, render_plan, replace_shot, retime, save_analysis, save_plan, set_overlays, with_music, grow_all)
 from .progress import ProgressEvent
 
 APP_DIR = OUTPUT_DIR / "app"
@@ -169,6 +171,7 @@ def _plan_result(pl, out: Path, notes=None) -> dict:
     return {"plan": str(out), "seed": pl.seed, "duration": round(pl.duration, 2),
             "aspect": pl.template["output"]["aspect"], "fps": float(pl.template["output"]["fps"]),
             "manual": has_manual(pl), "notes": notes or [], "overlays": pl.looks.get("overlays") or [],
+            "beat": round(float(pl.music.beat_period), 4),
             "shots": [{**s.to_dict(), "clip_path": s.clip.path, "src_start": s.src_start,
                        "t_start": s.t_start, "t_end": s.t_end} for s in pl.shots]}
 
@@ -213,6 +216,8 @@ def run_plan(job: Job) -> dict:
     notes = []
     if p.get("carry_from"):
         pl, notes = carry_manual(load_plan(_path(p["carry_from"])), pl, a)
+    if p.get("grow"):
+        pl = grow_all(pl, p["grow"])
     work = _path(p.get("work")) or analysis_path.parent
     out = _unique(work / f"plan_{seed}.json")
     save_plan(pl, out)
@@ -224,7 +229,8 @@ def run_shot(job: Job) -> dict:
     plan_path = _path(p["plan"])
     job.on_progress(ProgressEvent("shot", "edit", 0, 1))
     pl, notes = edit_shot(load_analysis(_path(p["analysis"])), load_plan(plan_path), int(p["index"]),
-                          p["sticker"] if "sticker" in p else KEEP, p["drawn"] if "drawn" in p else KEEP)
+                          p["sticker"] if "sticker" in p else KEEP, p["drawn"] if "drawn" in p else KEEP,
+                          p["grow"] if "grow" in p else KEEP)
     out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
     save_plan(pl, out)
     job.on_progress(ProgressEvent("shot", "edit", 1, 1))
@@ -269,6 +275,22 @@ def run_live(job: Job) -> dict:
         job.on_progress(ProgressEvent("live", "effects", n + 1, len(pending)))   # raises if cancelled
         job.partial = {"video": str(publish(f"fx{n + 1}")) if ok else job.partial["video"], "done": n + 1,
                        "total": len(pending), "pending": pending[n + 1:], "failed": failed}
+    grow = [i for i, s in enumerate(pl.shots) if s.grow]
+    if grow:                                  # 万物生长 transitions: one more pass that renders the missing ones
+        total = len(pending) + 1
+        job.partial = {**job.partial, "total": total, "pending": grow}
+        job.on_progress(ProgressEvent("live", "grow", 0, 1))
+        out = _unique(plan_path.parent / f"{stem}_grow.mp4")
+        render_plan(load_plan(plan_path), out, preview=True, effects_cache=cache, effects="cached", grow="all")
+        for old in made:
+            try:
+                old.unlink()
+                old.with_suffix(".timeline.json").unlink(missing_ok=True)
+            except OSError:
+                pass
+        made.append(out)
+        job.on_progress(ProgressEvent("live", "grow", 1, 1))
+        job.partial = {"video": str(out), "done": total, "total": total, "pending": [], "failed": failed}
     return job.partial
 
 
@@ -308,6 +330,16 @@ def clip_thumbs(analysis_path: Path) -> dict:
     with ThreadPoolExecutor(8) as ex:
         pics = list(ex.map(lambda c: frame_at(c.path, min(1.0, c.duration * 0.3), c.width / c.height, 120), clips))
     return {"thumbs": {c.path: p for c, p in zip(clips, pics)}}
+
+
+def run_grow(job: Job) -> dict:
+    """全片万物生长 on (grow = settings) or off (grow = null) for every shot."""
+    p = job.params
+    plan_path = _path(p["plan"])
+    pl = grow_all(load_plan(plan_path), p.get("grow"))
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return _plan_result(pl, out)
 
 
 def run_retime(job: Job) -> dict:
@@ -485,7 +517,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "retime": run_retime, "live": run_live}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "grow": run_grow, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None

@@ -1,13 +1,14 @@
 import React, { useState } from 'react'
 import Icon from './icons.jsx'
 
-const TABS = [['clips', '素材', 'film'], ['sticker', '贴纸', 'sticker'], ['drawn', '手绘', 'brush'], ['music', '音乐', 'music']]
+const TABS = [['clips', '素材', 'film'], ['sticker', '贴纸', 'sticker'], ['drawn', '手绘', 'brush'], ['fx', '转场', 'sparkle'], ['music', '音乐', 'music']]
 const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
 
 // Left library: footage (drag onto a 画中画 track, or click to add at the playhead), stickers (drag onto the picture, or click to add to the shot under the playhead),
 // drawing styles (click = draw the selected shot), music (switch the song).
 export default function Library({ looks, activeSticker, activeStyle, onAddSticker, onApplyStyle, music, songs, onPickSong,
-                                  onBrowseMusic, busy, rail, clips = [], clipThumbs = {}, onAddOverlay }) {
+                                  onBrowseMusic, busy, rail, clips = [], clipThumbs = {}, onAddOverlay, growTarget, onGrow,
+                                  onGrowAll, growAllOn }) {
   const [tab, setTab] = useState('sticker')
   const [open, setOpen] = useState(false)          // icon-rail mode: the panel flies out
   const show = !rail || open
@@ -76,6 +77,23 @@ export default function Library({ looks, activeSticker, activeStyle, onAddSticke
                   </button>
                 ))}
               </div>
+            </>
+          )}
+          {tab === 'fx' && (
+            <>
+              <p className="hint">转场加在镜头的开头：从上一个镜头变到这个镜头的方式</p>
+              <button className={`fx-card ${growTarget ? 'on' : ''}`} disabled={busy} onClick={onGrow}
+                      title="点一下：加到播放头所在（或选中）的镜头；再点一下去掉">
+                <span className="fx-demo" aria-hidden="true"><i className="g3" /><i className="g2" /><i className="g1" /></span>
+                <span className="fx-text">
+                  <b>万物生长{growTarget ? <small className="fx-on">镜头 {growTarget} 已用</small> : null}</b>
+                  <small>把画面按里面的东西分成几层（人和物 → 地面 → 中景 → 天空），一层一层踩着节拍从下往上长出来，盖住上一个镜头</small>
+                </span>
+              </button>
+              <label className="switch-row fx-all">
+                <span><b>全片都用</b><small>每个镜头都这样长出来，第一个从黑底长出</small></span>
+                <input type="checkbox" className="switch" checked={!!growAllOn} disabled={busy} onChange={(e) => onGrowAll(e.target.checked)} />
+              </label>
             </>
           )}
           {tab === 'music' && (
