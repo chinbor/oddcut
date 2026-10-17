@@ -234,3 +234,12 @@ button.mini { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
 .blk .edge.l { left: -3px; }
 .blk .edge.r { right: -3px; }
 .blk .key { cursor: pointer; z-index: 1; }
+
+/* ---------------------------------------------------------------- cut editing (phase C) */
+.cut { position: absolute; top: 2px; bottom: 2px; width: 8px; z-index: 3; cursor: col-resize; }
+.cut::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; border-radius: 1px; background: rgba(255,255,255,.0); }
+.cut:hover::after { background: #fff; }
+.cut.off { pointer-events: none; }
+.cut-ghost { position: absolute; top: 18px; bottom: 0; width: 2px; margin-left: -1px; background: #fff; z-index: 5; pointer-events: none; }
+.cut-ghost span { position: absolute; top: -16px; left: 4px; font-size: 10px; white-space: nowrap; padding: 0 4px; border-radius: 3px; background: #fff; color: #1a1310; }
+.toolbar .actions button[title^='撤销'], .toolbar .actions button[title^='重做'] { padding: 7px 10px; }

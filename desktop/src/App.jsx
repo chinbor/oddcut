@@ -241,17 +241,55 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [keySel, myDraft])
 
+  // undo / redo: every edit of the current plan is a new plan file, so history is just the earlier results
+  const [past, setPast] = useState([])
+  const [future, setFuture] = useState([])
+  const snapshot = () => ({ plan, preview, analysis })
+  const commitEdit = async (r) => {
+    setPast((p) => [...p.slice(-49), snapshot()])
+    setFuture([])
+    if (selected != null && selected >= r.shots.length) setSelected(null)
+    await showPlan(r, true)
+  }
+  const restore = (s) => { setPlan(s.plan); setPreview(s.preview); setAnalysis(s.analysis); setVideo(null) }
+  const undo = () => {
+    if (!past.length || busy) return
+    setFuture((f) => [snapshot(), ...f])
+    restore(past[past.length - 1])
+    setPast((p) => p.slice(0, -1))
+  }
+  const redo = () => {
+    if (!future.length || busy) return
+    setPast((p) => [...p, snapshot()])
+    restore(future[0])
+    setFuture((f) => f.slice(1))
+  }
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return
+      const k = e.key.toLowerCase()
+      if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
+      if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
   const applyShot = (index, change) => guard(async () => {
     const r = await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, ...change })
     if (r.notes?.length) setNotice(r.notes.join('；'))
-    if (index >= r.shots.length) setSelected(null)
-    await showPlan(r, true)
+    await commitEdit(r)
+  })()
+  const moveCut = (k, t, snap) => guard(async () => {
+    await commitEdit(await runJob({ kind: 'cut', analysis: analysis.analysis, plan: plan.plan, k, t, snap }))
   })()
   const checkShot = (index, box) => runJob({ kind: 'check', plan: plan.plan, index, box })
   const getStill = (index, t) => vc.api('GET', `/api/still?plan=${q(plan.plan)}&index=${index}&t=${t}`)
 
   const makePlan = guard(async () => {
     setSelected(null)
+    setPast([])
+    setFuture([])
     setPlan(null)
     setVideo(null)
     setPreview(null)
@@ -266,7 +304,9 @@ export default function App() {
   })
 
   const rerollPlan = guard(async () => {
-    if (plan?.manual && !window.confirm('换一版会重新排所有镜头，手动加的贴纸和手绘都会丢掉。确定吗？')) return
+    if (plan?.manual && !window.confirm('换一版会重新排所有镜头，手动加的贴纸、手绘和调过的切点都会丢掉（可以撤销回来）。确定吗？')) return
+    setPast((h) => [...h.slice(-49), snapshot()])
+    setFuture([])
     setSelected(null)
     setPlanLooks(looksKey)
     await showPlan(await runJob({ kind: 'plan', analysis: analysis.analysis, ...lookParams() }))
@@ -275,18 +315,26 @@ export default function App() {
   const changeMusic = guard(async () => {
     const music = await vc.pickMusic()
     if (!music) return
+    // an edited plan can keep its edit and just move onto the new song's beats
+    const keep = plan?.manual && window.confirm('保留现在的剪辑，只把镜头切点对齐到新歌的节拍？\n\n确定：保留剪辑（贴纸、手绘、切点都保留）\n取消：按新歌重新排镜头（手动效果尽量保留）')
+    const before = snapshot()
     const a = await runJob({ kind: 'music', analysis: analysis.analysis, music, duration: Number(form.duration) })
     setAnalysis(a)
     set('music')(music)
-    setPlanLooks(looksKey)
-    const p = await runJob({ kind: 'plan', analysis: a.analysis, ...lookParams(), carry_from: plan.plan })
-    setNotice([`已换成 ${a.music.name}（${a.music.tempo} BPM），镜头按新节拍重新排了`, ...(p.notes || [])].join('；'))
-    setSelected(null)
-    await showPlan(p)
+    const p = keep
+      ? await runJob({ kind: 'retime', analysis: a.analysis, plan: plan.plan })
+      : await runJob({ kind: 'plan', analysis: a.analysis, ...lookParams(), carry_from: plan.plan })
+    if (!keep) setPlanLooks(looksKey)
+    setNotice([`已换成 ${a.music.name}（${a.music.tempo} BPM）`, keep ? '剪辑保留，切点对齐到新歌的节拍' : '镜头按新节拍重新排了',
+               ...(p.notes || [])].join('；'))
+    setPast((h) => [...h.slice(-49), before])
+    setFuture([])
+    if (!keep) setSelected(null)
+    await showPlan(p, keep)
   })
 
   const swapShot = (index, clip) => guard(async () => {
-    await showPlan(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip }), true)
+    await commitEdit(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip }))
   })()
 
   const render = guard(async () => {
@@ -429,6 +477,8 @@ export default function App() {
             <div className="toolbar">
               <h2>剪辑方案 <small>{plan.shots.length} 个镜头 · {plan.duration}s · {plan.aspect} · 方案 #{plan.seed}</small></h2>
               <div className="actions">
+                <button disabled={busy || !past.length} onClick={undo} title="撤销（Ctrl+Z）">↶</button>
+                <button disabled={busy || !future.length} onClick={redo} title="重做（Ctrl+Shift+Z）">↷</button>
                 <button disabled={busy} onClick={rerollPlan} title="同样的素材和音乐，换一种剪法">换一版</button>
                 <button disabled={busy} onClick={changeMusic} title="换一首歌，按新节拍重新排镜头（手动加的贴纸和手绘会尽量保留）">换歌…</button>
                 <button className="primary" disabled={busy || !!video} onClick={render}>{video ? '已渲染' : '渲染成片'}</button>
@@ -454,7 +504,7 @@ export default function App() {
                                     onPlace={placeAt} onMoveKey={moveKey} onSelectKey={setKeySel}
                                     ghost={draftDirty || !shown} />
                   )}
-                  {shown && !video && <span className="badge">预览 · 低清{plan.manual ? '，手动加的效果已包含' : '，自动贴纸 / 手绘在成片里才有'}</span>}
+                  {shown && !video && <span className="badge">预览 · 低清{plan.shots.some((s) => s.sticker_at || s.drawn?.manual) ? '，手动加的效果已包含，自动的在成片里才有' : '，自动贴纸 / 手绘在成片里才有'}</span>}
                 </div>
                 <p className="viewer-note">{video ? `${fileName(video.video)} · ${video.duration}s` : '满意的话点「渲染成片」出高清版，带全部贴纸和手绘。'}</p>
               </div>
@@ -499,7 +549,7 @@ export default function App() {
 
             <Timeline plan={plan} thumbs={thumbs} wave={wave} time={time} onSeek={seek} selected={selected}
                       onSelect={selectShot} stickerName={(x) => stickerLabel(x, looks)}
-                      draft={myDraft} onDraft={setDraft} onKeySelect={setKeySel}
+                      draft={myDraft} onDraft={setDraft} onKeySelect={setKeySel} onCutMove={moveCut} busy={busy}
                       styleName={(id) => looks.drawn_styles.find((d) => d.id === (id || 'lineart'))?.name || '线稿上色'} />
           </div>
         )}

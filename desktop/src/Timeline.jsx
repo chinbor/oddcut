@@ -10,12 +10,13 @@ const ROLE_COLORS = {
 const LABEL_W = 56
 
 export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, onSelect, stickerName, styleName,
-                                   draft, onDraft, onKeySelect }) {
+                                   draft, onDraft, onKeySelect, onCutMove, busy }) {
   const scroller = useRef(null)
   const canvas = useRef(null)
   const [pps, setPps] = useState(null)          // pixels per second; null = fit the width
   const [width, setWidth] = useState(800)
   const dragging = useRef(false)
+  const [cutDrag, setCutDrag] = useState(null)   // {k, t, snapped} while a cut is being dragged
   const duration = plan.duration
 
   useEffect(() => {
@@ -108,6 +109,38 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
     window.addEventListener('pointerup', up)
   }
 
+  // drag a cut: snaps to the nearest beat (alt: free); the neighbours keep at least 0.4 s
+  const startCut = (e, k) => {
+    if (busy) return
+    e.preventDefault()
+    e.stopPropagation()
+    const el = scroller.current
+    const lo = plan.shots[k - 1].t_start + 0.4
+    const hi = plan.shots[k].t_end - 0.4
+    const beats = wave?.grid?.t || []
+    let state = null
+    const at = (ev) => {
+      const r = el.getBoundingClientRect()
+      let t = Math.min(hi, Math.max(lo, (ev.clientX - r.left + el.scrollLeft - LABEL_W) / scale))
+      let snapped = false
+      if (!ev.altKey && beats.length) {
+        const near = beats.filter((b) => b >= lo && b <= hi).reduce((best, b) => (Math.abs(b - t) < Math.abs(best - t) ? b : best), Infinity)
+        if (Number.isFinite(near)) { t = near; snapped = true }
+      }
+      state = { k, t, snapped, alt: ev.altKey }
+      setCutDrag(state)
+    }
+    at(e)
+    const up = () => {
+      window.removeEventListener('pointermove', at)
+      window.removeEventListener('pointerup', up)
+      setCutDrag(null)
+      if (state && Math.abs(state.t - plan.shots[k].t_start) > 0.005) onCutMove(k, state.t, !state.alt)
+    }
+    window.addEventListener('pointermove', at)
+    window.addEventListener('pointerup', up)
+  }
+
   const select = (i, e) => {
     e.stopPropagation()
     onSelect(i)
@@ -119,7 +152,7 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
     <div className="timeline-panel">
       <div className="tl-head">
         <span>时间线</span>
-        <small>点镜头编辑 · 拖时间尺定位 · 空格播放 / 暂停 · Ctrl + 滚轮缩放</small>
+        <small>点镜头编辑 · 拖镜头之间的竖线调切点（Alt 不吸附）· 拖时间尺定位 · 空格播放 · Ctrl+滚轮缩放 · Ctrl+Z 撤销</small>
         <button className="mini" onClick={() => setPps(null)} disabled={pps == null}>适应宽度</button>
       </div>
       <div className="tl-scroll" ref={scroller}>
@@ -141,6 +174,10 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
                    onPointerDown={(e) => select(i, e)}>
                 <span className="num">{i + 1}</span>
               </div>
+            ))}
+            {plan.shots.slice(1).map((s, j) => (
+              <i key={`c${j}`} className={`cut ${busy ? 'off' : ''}`} style={{ left: x(s.t_start) - 4 }}
+                 title="拖动调整切点（自动吸附到节拍，按住 Alt 不吸附）" onPointerDown={(e) => startCut(e, j + 1)} />
             ))}
           </div>
 
@@ -200,6 +237,11 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
             <canvas ref={canvas} style={{ position: 'absolute', left: LABEL_W, top: 2 }} />
           </div>
 
+          {cutDrag && (
+            <div className="cut-ghost" style={{ left: x(cutDrag.t) }}>
+              <span>{cutDrag.t.toFixed(2)}s{cutDrag.snapped ? ' · 节拍' : ''}</span>
+            </div>
+          )}
           <div className="playhead" style={{ left: x(time) }} onPointerDown={startScrub} />
         </div>
       </div>

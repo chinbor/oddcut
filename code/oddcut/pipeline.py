@@ -406,7 +406,111 @@ def _shift_keys(place: dict, dt: float) -> dict:
 
 
 def has_manual(p: Plan) -> bool:
-    return any(s.sticker_at or (s.drawn and s.drawn.get("manual")) for s in p.shots)
+    return bool(p.looks.get("edited_cuts")) or any(s.sticker_at or (s.drawn and s.drawn.get("manual")) for s in p.shots)
+
+
+MIN_SHOT = 0.4           # shortest shot a cut edit may leave
+
+
+def _drawn_cfg(tpl: dict, index: int) -> tuple[float, float]:
+    """(reveal seconds, shortest tail) of a drawn shot."""
+    cfg = tpl.get("drawn_opening" if index == 0 else "drawn_mid") or tpl["drawn_opening"]
+    return float(cfg.get("reveal_seconds", 0.4)), float(cfg.get("tail", (0.5, 1.1))[0])
+
+
+def _retail(s: Shot, rs: float) -> None:
+    """A drawn shot's tail after its length or reveal moved."""
+    s.drawn = {**s.drawn, "tail": round(s.t_end - s.t_start - s.drawn["reveal_at"] - rs, 3)}
+
+
+def _clip_len(analysis: Analysis, path: str) -> float | None:
+    return next((c.duration for c in analysis.clips if _norm(c.path) == _norm(path)), None)
+
+
+def move_cut(analysis: Analysis, p: Plan, k: int, t: float, snap: bool = True) -> tuple[Plan, list[str]]:
+    """Move the cut between shot k-1 and shot k to timeline time `t` (snapped to the nearest beat unless
+    snap=False). The shot before ends there, the one after starts there and shows the same footage it showed
+    at that moment (its start in the clip moves with the cut), so nothing else moves and the total stays."""
+    if not 1 <= k < len(p.shots):
+        raise IndexError(f"cut {k} out of range (plan has {len(p.shots)} shots)")
+    fps = float(p.template["output"]["fps"])
+    shots = [replace(s) for s in p.shots]
+    a, b = shots[k - 1], shots[k]
+    lo, hi = a.t_start + MIN_SHOT, b.t_end - MIN_SHOT
+    if a.drawn:                                   # the drawing has to finish before the cut
+        rs, tail = _drawn_cfg(p.template, k - 1)
+        lo = max(lo, a.t_start + a.drawn["reveal_at"] + rs + tail)
+    if b.drawn:                                   # and a drawn shot after it needs its drawing time
+        rs, tail = _drawn_cfg(p.template, k)
+        hi = min(hi, b.t_start + b.drawn["reveal_at"] - 0.5, b.t_end - rs - tail)
+    clip_a = _clip_len(analysis, a.clip.path)
+    if clip_a is not None:                        # can't show more of a clip than there is
+        hi = min(hi, a.t_start + (clip_a - a.src_start) - 0.05)
+    lo = max(lo, b.t_start - b.src_start)         # nor start the next shot before its clip starts
+    if lo > hi:
+        raise ValueError("这两个镜头已经不能再调了（太短，或者手绘需要的时间不够）")
+    if snap:
+        grid = analysis.music.grid
+        inside = grid[(grid >= lo - 1e-6) & (grid <= hi + 1e-6)]
+        if len(inside):
+            t = float(inside[np.argmin(np.abs(inside - t))])
+    t = float(min(max(t, lo), hi))
+    d = t - b.t_start
+    a.t_end = t
+    a.frames = _frames_between(a.t_start, a.t_end, fps)
+    b.t_start = t
+    b.src_start += d
+    b.frames = _frames_between(b.t_start, b.t_end, fps)
+    if b.sticker_at:
+        b.sticker_at = _shift_keys(b.sticker_at, -d)
+    if b.drawn:
+        b.drawn = {**b.drawn, "reveal_at": round(b.drawn["reveal_at"] - d, 3)}
+        _retail(b, _drawn_cfg(p.template, k)[0])
+    if a.drawn:
+        _retail(a, _drawn_cfg(p.template, k - 1)[0])
+    return replace(p, shots=shots, looks={**p.looks, "edited_cuts": True}), []
+
+
+def retime(analysis: Analysis, p: Plan) -> tuple[Plan, list[str]]:
+    """Keep this edit (shots, footage, stickers, drawings) but put it on another song: every cut snaps to the
+    nearest beat of the new song, drawn shots reveal on its strongest beat, the music reference changes."""
+    fps = float(p.template["output"]["fps"])
+    grid, strength = analysis.music.grid, analysis.music.strength
+    shots = [replace(s) for s in p.shots]
+    n = len(shots)
+    total = min(p.duration, float(analysis.music.duration) - 0.3)
+    cuts, prev = [], 0.0
+    for i, s in enumerate(shots[1:], start=1):
+        room = total - MIN_SHOT * (n - i)
+        cand = grid[(grid >= prev + MIN_SHOT) & (grid <= room)]
+        t = float(cand[np.argmin(np.abs(cand - s.t_start))]) if len(cand) else min(max(s.t_start, prev + MIN_SHOT), room)
+        cuts.append(t)
+        prev = t
+    ends = grid[(grid >= prev + 0.8) & (grid <= total + 0.3)]
+    end = float(ends[np.argmin(np.abs(ends - total))]) if len(ends) else total
+    bounds = [0.0] + cuts + [end]
+    notes = []
+    for i, s in enumerate(shots):
+        old_start = s.t_start
+        s.t_start, s.t_end = bounds[i], bounds[i + 1]
+        s.frames = _frames_between(s.t_start, s.t_end, fps)
+        if s.drawn:
+            rs, tail = _drawn_cfg(p.template, i)
+            want = old_start + s.drawn["reveal_at"]
+            m = (grid >= s.t_start + 0.6) & (grid <= s.t_end - rs - tail)
+            reveal = float(grid[m][np.argmax(strength[m] - 0.3 * np.abs(grid[m] - want))]) if m.any() else None
+            if reveal is None:
+                s.drawn = None
+                s.role = "hook" if i == 0 else "body"
+                notes.append(f"镜头 {i + 1} 在新歌里太短，放不下手绘，已改成普通镜头")
+                continue
+            s.drawn = {**s.drawn, "reveal_at": round(reveal - s.t_start, 3)}
+            _retail(s, rs)
+        if s.sticker_at and s.sticker_at.get("out") is not None:
+            s.sticker_at = {**s.sticker_at, "out": min(float(s.sticker_at["out"]), s.t_end - s.t_start)}
+    m = analysis.music
+    music = MusicRef(m.path, float(m.start), float(m.tempo), float(m.beat_period))
+    return replace(p, shots=shots, music=music, looks={**p.looks, "edited_cuts": True}), notes
 
 
 def carry_manual(old: Plan, new: Plan, analysis: Analysis) -> tuple[Plan, list[str]]:

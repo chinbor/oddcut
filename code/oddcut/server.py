@@ -33,6 +33,8 @@ Job parameters (paths are absolute or relative to the project root):
              sticker: null | {id, mode: follow | fixed, keys: [{t, x, y, size}], in, out}
              drawn:   null | {style, box?, force?}   (a key left out = that part unchanged)
     check    plan, index, [box]  -> {ok, found, reason, label, box, image}: can shot `index` be drawn?
+    cut      analysis, plan, k, t, [snap]  -> like plan; moves the cut before shot k to t (snapped to a beat)
+    retime   analysis, plan  -> like plan; the same edit on the analysis' song, cuts snapped to its beats
     plan also takes carry_from: an earlier plan whose hand edits move over (e.g. after a music job)
 
 Clip analyses (incl. the sticker / drawn checks, per output size), song analyses and rendered sticker /
@@ -53,8 +55,8 @@ from pathlib import Path
 from . import __version__
 from .formats import ASPECTS
 from .paths import OUTPUT_DIR, PROJECT_ROOT, TEMPLATE_DIR
-from .pipeline import (KEEP, Options, analyze, carry_manual, edit_shot, has_manual, load_analysis, load_plan, plan,
-                       render_plan, replace_shot, save_analysis, save_plan, with_music)
+from .pipeline import (KEEP, Options, analyze, carry_manual, edit_shot, has_manual, load_analysis, load_plan, move_cut,
+                       plan, render_plan, replace_shot, retime, save_analysis, save_plan, with_music)
 from .progress import ProgressEvent
 
 APP_DIR = OUTPUT_DIR / "app"
@@ -218,6 +220,25 @@ def run_shot(job: Job) -> dict:
     return _plan_result(pl, out, notes)
 
 
+def run_cut(job: Job) -> dict:
+    p = job.params
+    plan_path = _path(p["plan"])
+    pl, notes = move_cut(load_analysis(_path(p["analysis"])), load_plan(plan_path), int(p["k"]), float(p["t"]),
+                         bool(p.get("snap", True)))
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return _plan_result(pl, out, notes)
+
+
+def run_retime(job: Job) -> dict:
+    p = job.params
+    analysis_path = _path(p["analysis"])
+    pl, notes = retime(load_analysis(analysis_path), load_plan(_path(p["plan"])))
+    out = _unique(analysis_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return _plan_result(pl, out, notes)
+
+
 def run_check(job: Job) -> dict:
     from .drawn_reveal import check_shot
     from .formats import output_size
@@ -352,7 +373,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "retime": run_retime}
 
 
 _LOOKS: dict | None = None
