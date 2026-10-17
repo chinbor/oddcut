@@ -1,19 +1,19 @@
 """万物生长 (everything grows): a shot assembles itself out of the previous one.
 
-The incoming shot is cut into 3-4 layers from the bottom up, the way the 剪映 tutorials cut it by hand: the
-first layer is the bottom of the picture (the ground and what stands on it), each next one reaches higher, the
-last one is the whole picture. The layers are cumulative - each contains everything below its top edge - so
-there is never a hole, and the first one to rise is drawn on top: the whole picture slides in last, behind the
-pieces already in place. Each layer slides up from below the frame (ease-out), one per beat or half-beat
-starting on the cut, with a little vertical motion blur; the previous shot keeps playing underneath until it is
-covered (the very first shot grows out of black). Nothing freezes.
+As in the 剪映 tutorials, the picture is cut into 3-4 layers of COMPLETE things - a whole person, car, cat or
+cup, the ground, the band of buildings / trees, the sky - and the layers slide up into place from below the frame
+one after another (front first, sky last), each starting on a beat or half-beat, fast then settling, with a
+little vertical motion blur. The previous shot keeps playing in the parts not yet covered (the very first shot
+grows out of black); nothing freezes.
 
-Where the layers' top edges run (no new model):
-    contours  seams along the strongest horizontal edges (a kerb, the top of a field, roofs), from the bottom up;
-              the top one is the skyline when the shot has sky
-    things    YOLO-seg instances (people, vehicles, animals, ...) go with the layer their feet are in, whole -
-              a person rises with the ground they stand on; they are found again every other frame of the
-              rise, so a moving subject stays in its layer
+Cutting (no extra model):
+    things  YOLO-seg instances of any class, refined with GrabCut seeded from the YOLO mask, holes filled,
+            only the largest piece kept: one clean, complete silhouette per object; they rise together, first
+    stuff   the ground below a seam along strong horizontal edges, the band of buildings / trees above it, the
+            sky from the top of each column down (its lower edge is the skyline); a seam never cuts a thing
+A layer that rises behind things already in place carries, where those things are, a smeared copy of the
+picture (it reads as motion), so it never shows a hole or a sharp second copy of them while it moves. Things
+are followed through the rise with optical flow, so a moving subject stays one piece.
 """
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ MIN_THING = 0.006              # an instance smaller than this share of the pict
 MAX_THING = 0.55
 SHUTTER = 0.5                  # motion blur: share of a frame the "shutter" is open (x the blur setting)
 MAX_BLUR = 0.06                # ... and never longer than this share of the picture height
-FEATHER = 1.5                  # px (at SEG_H) of soft edge on every layer
-REDETECT = 3                   # things are found again every this many frames during the rise (smaller)
+FEATHER = 1.2                  # px (at SEG_H) of soft edge on every layer
+FLOW_EVERY = 2                 # things are moved along the optical flow every this many frames of the rise
 
 
 def timing(length: float, beat: float, layers: int = 3, stagger: str = "beat") -> dict:
@@ -128,77 +128,162 @@ def _seam(rgb: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
     return path
 
 
-def _follow(old: list[np.ndarray], new: list[np.ndarray]) -> list[np.ndarray]:
-    """Things found again in a later frame; one that isn't found this time keeps its last mask, so nothing
-    blinks out of its layer for a frame or two."""
-    out = list(new)
-    for m in old:
-        if not any((m & n).sum() > 0.3 * min(m.sum(), n.sum()) for n in new):
-            out.append(m)
+def _refine(rgb: np.ndarray, m: np.ndarray) -> np.ndarray | None:
+    """A YOLO mask made into one clean, complete silhouette: GrabCut seeded from it (sure inside its eroded
+    core, maybe inside the mask, maybe outside a ring around it, outside beyond), holes filled, largest piece."""
+    h, w = m.shape
+    k = max(3, int(0.012 * min(h, w)) | 1)
+    core = cv2.erode(m.astype(np.uint8), np.ones((k, k), np.uint8), iterations=2) > 0
+    ring = cv2.dilate(m.astype(np.uint8), np.ones((k, k), np.uint8), iterations=3) > 0
+    gc = np.full((h, w), cv2.GC_BGD, np.uint8)
+    gc[ring] = cv2.GC_PR_BGD
+    gc[m] = cv2.GC_PR_FGD
+    gc[core] = cv2.GC_FGD
+    ys, xs = np.nonzero(ring)
+    if not len(ys) or not core.any():
+        return None
+    y0, y1, x0, x1 = max(0, ys.min() - 4), min(h, ys.max() + 5), max(0, xs.min() - 4), min(w, xs.max() + 5)
+    sub = gc[y0:y1, x0:x1].copy()
+    try:
+        cv2.grabCut(np.ascontiguousarray(rgb[y0:y1, x0:x1, ::-1]), sub, None, np.zeros((1, 65), np.float64),
+                    np.zeros((1, 65), np.float64), 3, cv2.GC_INIT_WITH_MASK)
+    except cv2.error:
+        return m
+    out = np.zeros((h, w), bool)
+    out[y0:y1, x0:x1] = (sub == cv2.GC_FGD) | (sub == cv2.GC_PR_FGD)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(out.astype(np.uint8))
+    if n < 2:
+        return None
+    out = lab == 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))
+    inter = (out & m).sum()
+    if out.sum() > 1.4 * m.sum() or inter < 0.75 * m.sum():     # GrabCut leaked into a look-alike background
+        out = m.copy()
+    return _fill_holes(cv2.morphologyEx(out.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)) > 0)
+
+
+def _fill_holes(m: np.ndarray) -> np.ndarray:
+    """m with every hole filled (whatever the outside can't reach)."""
+    h, w = m.shape
+    flood = np.pad(m.astype(np.uint8), 1)
+    cv2.floodFill(flood, np.zeros((h + 4, w + 4), np.uint8), (0, 0), 2)
+    return m | (flood[1:-1, 1:-1] == 0)
+
+
+def _things(rgb: np.ndarray) -> list[np.ndarray]:
+    """Complete silhouettes of the things in the picture, largest first, no two sharing pixels."""
+    out = []
+    for m in sorted(_instances(rgb), key=lambda m: -m.sum()):
+        r = _refine(rgb, m)
+        if r is None or r.mean() < MIN_THING:
+            continue
+        for o in out:
+            r &= ~o
+        if r.mean() >= MIN_THING:
+            out.append(r)
     return out
 
 
-def contours(rgb: np.ndarray, n: int, things: list[np.ndarray]) -> list[np.ndarray]:
-    """Top edges y(x) of layers 1..n-1 (bottom up), at rgb's size, each above the one before."""
+def _flow_masks(prev_rgb: np.ndarray, rgb: np.ndarray, masks: list[np.ndarray]) -> list[np.ndarray]:
+    """Things moved along the optical flow from one frame to the next (they stay whole)."""
+    g0, g1 = (cv2.cvtColor(x, cv2.COLOR_RGB2GRAY) for x in (prev_rgb, rgb))
+    flow = cv2.calcOpticalFlowFarneback(g1, g0, None, 0.5, 3, 21, 3, 5, 1.1, 0)   # where each pixel came from
+    h, w = g0.shape
+    gx, gy = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    mx, my = gx + flow[..., 0], gy + flow[..., 1]
+    return [cv2.remap(m.astype(np.float32), mx, my, cv2.INTER_LINEAR) > 0.5 for m in masks]
+
+
+def plan_layers(rgb: np.ndarray, n: int, things: list[np.ndarray]) -> tuple[list[np.ndarray], list[str], tuple]:
+    """Own pixels of each layer (bool, disjoint, covering the picture), in rising order, their names, and the
+    seams (ground seam, skyline) so the same cut can be redrawn when things move."""
     h, w = rgb.shape[:2]
     union = np.zeros((h, w), bool)
     for m in things:
         union |= m
     sky = _skyline(rgb, union)
-    top = sky if sky is not None else np.full(w, int(0.12 * h))
-    out = []
-    lo_prev = np.full(w, h - 1)
-    for k in range(1, n):
-        if k == n - 1 and sky is not None:
-            c = np.minimum(top, lo_prev - 6)
-        else:
-            # band around the k-th share of the room between the skyline and the bottom
-            span = (lo_prev - top).astype(np.float32)
-            share = 1.0 / (n - k) if sky is not None else 1.0 / (n - k + 0.6)
-            mid = (lo_prev - span * share).astype(int)
-            band = np.maximum(8, (span * 0.22).astype(int))
-            c = _seam(rgb, np.clip(mid - band, top, lo_prev - 6), np.clip(mid + band, top + 1, lo_prev - 4))
-        c = np.minimum(c, lo_prev - 6)
-        out.append(np.clip(c, 0, h - 1))
-        lo_prev = out[-1]
-    return out
+    sky_line = sky if sky is not None else np.zeros(w, int)
+    lo = np.maximum(sky_line + int(0.06 * h), int(0.5 * h))
+    hi = np.full(w, int(0.9 * h))
+    ground_seam = _seam(rgb, np.minimum(lo, hi - 4), hi)
+    extra = None
+    if sky is None or n >= 4:                                   # a second seam splits the middle band
+        top = np.maximum(sky_line + 4, int(0.08 * h))
+        extra = _seam(rgb, np.minimum(top + (ground_seam - top) // 4, ground_seam - 8),
+                      np.maximum(ground_seam - (ground_seam - top) // 4, top + 8))
+    return _assemble((h, w), n, things, ground_seam, sky_line if sky is not None else None, extra)
 
 
-def layer_masks(shape: tuple[int, int], cs: list[np.ndarray], things: list[np.ndarray], out_size=None) -> list[np.ndarray]:
-    """Cumulative masks (float32 0..1), rising order: layer k = everything below contour k plus the things
-    whose feet are below it (whole); the last layer is the whole picture."""
+def _assemble(shape, n, things, ground_seam, sky_line, extra):
+    """Own pixels per layer, front / low first. Each thing goes, whole, with the region its bottom edge is in:
+    standing on the ground it rises first (or with the ground), a lantern hanging high rises with the top."""
     h, w = shape
     rows = np.arange(h)[:, None]
-    feet = []
+    union = np.zeros((h, w), bool)
+    for m in things:
+        union |= m
+    ground = (rows > ground_seam[None, :]) & ~union
+    sky = (rows < sky_line[None, :]) & ~union if sky_line is not None else np.zeros((h, w), bool)
+    mid = ~union & ~ground & ~sky
+    split = extra is not None and (n >= 4 or sky_line is None)
+    far = mid & (rows < extra[None, :]) if split else np.zeros((h, w), bool)
+    mid = mid & ~far
+    low, high = np.zeros((h, w), bool), {"mid": np.zeros((h, w), bool), "far": np.zeros((h, w), bool), "sky": np.zeros((h, w), bool)}
     for m in things:
         ys, xs = np.nonzero(m)
-        if len(ys):
-            y = ys.max()
-            x = int(np.median(xs[ys >= y - max(2, h // 60)]))
-            feet.append((m, y, x))
-    masks = []
-    for c in cs:
-        m = rows > c[None, :]
-        for thing, y, x in feet:
-            if y > c[x]:
-                m = m | thing
-        masks.append(m)
-    out = []
-    for m in masks:
-        f = cv2.GaussianBlur(m.astype(np.float32), (0, 0), FEATHER)
-        out.append(cv2.resize(f, out_size, interpolation=cv2.INTER_LINEAR) if out_size else f)
-    full = np.ones(out_size[::-1] if out_size else shape, np.float32)
-    return out + [full]
+        y = int(ys.max())
+        x = int(np.median(xs[ys >= y - max(2, h // 60)]))
+        if y > ground_seam[x] - h // 40:
+            low |= m
+        elif split and y < extra[x]:
+            high["far"] |= m
+        elif sky_line is not None and y < sky_line[x]:
+            high["sky"] |= m
+        else:
+            high["mid"] |= m
+    parts = [("things", low), ("ground", ground), ("mid", mid | high["mid"])]
+    if split:
+        parts.append(("far", far | high["far"]))
+    if sky_line is not None:
+        parts.append(("sky", sky | high["sky"]))
+    parts = [(nm, m) for nm, m in parts if m.mean() > 0.004]
+    while len(parts) > n:                                       # too many: join the two front-most
+        (a, ma), (b, mb) = parts[0], parts[1]
+        parts[:2] = [(f"{a}+{b}", ma | mb)]
+    seams = (ground_seam, sky_line, extra)
+    return [m for _, m in parts], [nm for nm, _ in parts], seams
 
 
-def make_layers(rgb: np.ndarray, n: int = 3) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
-    """(masks at rgb's size in rising order, the contours, the things) for the first frame of a shot."""
+def supports(own: list[np.ndarray]) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """What each layer carries while it rises: its own pixels plus, below its top edge, the pixels of the
+    layers in front of it (to be filled with the picture behind them). Returns (support, filled) masks."""
+    h, w = own[0].shape
+    rows = np.arange(h)[:, None]
+    front = np.zeros((h, w), bool)
+    sup, fill = [], []
+    for m in own:
+        cols = m.any(0)
+        top = np.where(cols, m.argmax(0), h)
+        top = np.array([top[max(0, x - 4):x + 5].min() for x in range(w)])     # bridge thin gaps
+        f = front & (rows >= top[None, :])
+        sup.append(m | f)
+        fill.append(f)
+        front |= m
+    return sup, fill
+
+
+def make_layers(rgb: np.ndarray, n: int = 3):
+    """Everything the render needs for a shot's first frame (worked out at SEG_H)."""
     H, W = rgb.shape[:2]
     sh, sw = SEG_H, max(2, int(round(W * SEG_H / H)))
     small = cv2.resize(rgb, (sw, sh), interpolation=cv2.INTER_AREA)
-    things = _instances(small)
-    cs = contours(small, n, things)
-    return layer_masks((sh, sw), cs, things, (W, H)), cs, things
+    things = _things(small)
+    own, names, seams = plan_layers(small, n, things)
+    return small, things, own, names, seams
+
+
+def _feathered(masks: list[np.ndarray], size) -> list[np.ndarray]:
+    return [cv2.resize(cv2.GaussianBlur(m.astype(np.float32), (0, 0), FEATHER), size, interpolation=cv2.INTER_LINEAR)
+            for m in masks]
 
 
 # ----------------------------------------------------------------------------- frames
@@ -226,24 +311,31 @@ def render_grow(new_part: Path, prev_part: Path | None, out: Path, fps: float, w
     n_tr = min(frames, int(np.ceil(tm["land"] * fps)) + 1)
     new = _read(new_part, w, h, frames)
     prev = _read(prev_part, w, h, n_tr) if prev_part else np.zeros((n_tr, h, w, 3), np.uint8)
-    masks, cs, things = make_layers(new[0], layers)
-    sh, sw = SEG_H, max(2, int(round(w * SEG_H / h)))
-    z = list(range(len(masks)))[::-1]            # whole picture (rises last) lowest, first layer on top
+    small, things, own, names, seams = make_layers(new[0], layers)
+    sh, sw = small.shape[:2]
+    n_layers = len(own)
+    blur_sigma = 0.03 * h                         # behind things in front: a smeared copy (reads as motion)
+    z = list(range(n_layers))[::-1]              # the first layer to rise is drawn on top
     starts, rise = tm["starts"], tm["rise"]
 
     def off(t: float, k: int) -> float | None:
         u = (t - starts[k]) / rise
         return None if u < 0 else (1 - _ease(min(1.0, u))) * h
 
-    def prepare(ms):
-        m3 = [cv2.merge([m, m, m]) for m in ms]
+    def prepare(own_masks):
+        sup, fill = supports(own_masks)
+        a = _feathered(sup, (w, h))
+        fl = _feathered(fill, (w, h))
+        m3 = [cv2.merge([m, m, m]) for m in a]
+        f3 = [cv2.merge([m, m, m]) if m.max() > 1e-3 else None for m in fl]
         spans = []                               # rows each layer covers (only those are worked on)
-        for m in ms:
+        for m in a:
             rows = np.nonzero(m.max(1) > 1e-3)[0]
             spans.append((int(rows[0]), int(rows[-1]) + 1) if len(rows) else (0, 0))
-        return m3, spans
+        return m3, f3, spans
 
-    m3, spans = prepare(masks)
+    m3, f3, spans = prepare(own)
+    prev_small = small
     proc = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
                              "-r", str(fps), "-i", "-", "-vf", "scale=out_color_matrix=bt709:out_range=tv", *encode, str(out)],
                             stdin=subprocess.PIPE)
@@ -253,10 +345,13 @@ def render_grow(new_part: Path, prev_part: Path | None, out: Path, fps: float, w
                 proc.stdin.write(new[f].tobytes())
                 continue
             t = f / fps
-            if f and f % REDETECT == 0 and f < n_tr - 1:      # moving things stay in their layer
+            if things and f % FLOW_EVERY == 0 and 0 < f < n_tr - 1:   # moving things stay whole, in their layer
                 small = cv2.resize(new[f], (sw, sh), interpolation=cv2.INTER_AREA)
-                things = _follow(things, _instances(small, 320))
-                m3, spans = prepare(layer_masks((sh, sw), cs, things, (w, h)))
+                things = _flow_masks(prev_small, small, things)
+                prev_small = small
+                own, _, _ = _assemble((sh, sw), layers, things, *seams)
+                if len(own) == n_layers:
+                    m3, f3, spans = prepare(own)
             acc = prev[f].astype(np.float32)
             frame = new[f].astype(np.float32)
             for k in z:
@@ -272,7 +367,12 @@ def render_grow(new_part: Path, prev_part: Path | None, out: Path, fps: float, w
                 if o0 >= o1:
                     continue
                 n = o1 - o0                          # rows of the layer that are inside the frame
-                col = cv2.multiply(frame[r0:r0 + n], m3[k][r0:r0 + n])     # premultiplied
+                src = frame[r0:r0 + n]
+                if f3[k] is not None:                    # behind the things in front: a smeared copy of them
+                    tiny = cv2.resize(src, (max(1, w // 8), max(1, n // 8)), interpolation=cv2.INTER_AREA)
+                    smear = cv2.resize(cv2.GaussianBlur(tiny, (0, 0), blur_sigma / 8), (w, n), interpolation=cv2.INTER_LINEAR)
+                    src = src * (1 - f3[k][r0:r0 + n]) + smear * f3[k][r0:r0 + n]
+                col = cv2.multiply(src, m3[k][r0:r0 + n])                  # premultiplied
                 a = m3[k][r0:r0 + n]
                 if klen >= 3:                        # vertical motion blur, as long as the move in a frame
                     col, a = cv2.blur(col, (1, klen)), cv2.blur(a, (1, klen))
