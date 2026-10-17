@@ -104,8 +104,8 @@ def load_template(path: str | Path, opts: Options | None = None) -> dict:
 def analyze(clips_dir: str | Path, music_path: str | Path, template_path: str | Path,
             opts: Options | None = None, progress: Progress | None = None,
             cache_dir: str | Path | None = None) -> Analysis:
-    """`cache_dir`: keep each clip's analysis there (keyed by path, size and mtime), so the same footage
-    is only decoded once. The sticker / drawn checks depend on the aspect and always run."""
+    """`cache_dir`: keep each clip's analysis there (keyed by path, size and mtime), and its sticker /
+    drawn checks per output size, so the same footage is only looked at once."""
     opts = opts or Options()
     report = Reporter(progress)
     template_path = str(Path(template_path).resolve())
@@ -120,16 +120,16 @@ def analyze(clips_dir: str | Path, music_path: str | Path, template_path: str | 
         report("analyze", "clips", i + 1, len(paths))
 
     report("analyze", "music", 0, 1)
-    music = analyze_music(str(Path(music_path).resolve()), opts.music_start,
-                          tpl["music"].get("half_beat_below_bpm", 100),
-                          tuple(tpl["music"].get("bpm_range", (75, 175))),
-                          tpl["output"]["duration"]["target"] + 2.0)
+    music = _cached_music(str(Path(music_path).resolve()), opts.music_start, tpl, cache_dir)
     report("analyze", "music", 1, 1)
 
     tagged = False
+    aspect_id = f"{w}x{h}"
     if tpl.get("stickers", {}).get("enabled") and opts.stickers:
         if sticker_stage.available():
-            sticker_stage.tag_clips(clips, w / h, lambda n, t, c: report("analyze", "stickers", n, t))
+            _cached_pass(clips, "tags", aspect_id, cache_dir,
+                         lambda todo, cb: sticker_stage.tag_clips(todo, w / h, cb),
+                         lambda n, t: report("analyze", "stickers", n, t))
             report("analyze", "stickers", len(clips), len(clips))
             tagged = True
         else:
@@ -137,7 +137,9 @@ def analyze(clips_dir: str | Path, music_path: str | Path, template_path: str | 
 
     if (tpl.get("drawn_opening", {}).get("enabled") and opts.drawn
             and any(any(c.tags) for c in clips)):
-        sticker_stage.tag_drawable(clips, w / h, lambda n, t, c: report("analyze", "drawn", n, t))
+        _cached_pass(clips, "drawable", aspect_id, cache_dir,
+                     lambda todo, cb: sticker_stage.tag_drawable(todo, w / h, cb),
+                     lambda n, t: report("analyze", "drawn", n, t))
         report("analyze", "drawn", len(clips), len(clips))
     return Analysis(tpl, template_path, clips, music, opts, tagged)
 
@@ -169,17 +171,15 @@ def plan(analysis: Analysis, seed: int = 7, progress: Progress | None = None) ->
 
 
 def with_music(analysis: Analysis, music_path: str | Path, music_start: float | None = None,
-               duration: float | None = None, progress: Progress | None = None) -> Analysis:
+               duration: float | None = None, progress: Progress | None = None,
+               cache_dir: str | Path | None = None) -> Analysis:
     """The same footage analysis with another song (or another target duration): only the music is analyzed."""
     report = Reporter(progress)
     tpl = json.loads(json.dumps(analysis.template))
     if duration:
         tpl["output"]["duration"]["target"] = duration
     report("music", "music", 0, 1)
-    music = analyze_music(str(Path(music_path).resolve()), music_start,
-                          tpl["music"].get("half_beat_below_bpm", 100),
-                          tuple(tpl["music"].get("bpm_range", (75, 175))),
-                          tpl["output"]["duration"]["target"] + 2.0)
+    music = _cached_music(str(Path(music_path).resolve()), music_start, tpl, cache_dir)
     report("music", "music", 1, 1)
     opts = replace(analysis.options, music_start=music_start, duration=duration or analysis.options.duration)
     return Analysis(tpl, analysis.template_path, analysis.clips, music, opts, analysis.stickers_tagged)
@@ -336,27 +336,86 @@ def _norm(p: str) -> str:
     return os.path.normcase(os.path.abspath(p))
 
 
+def _cache_file(cache_dir: str | Path, kind: str, path: str, extra: str = "") -> Path:
+    """Cache entry for one clip: keyed by the file (path, size, mtime) and whatever else the result depends on."""
+    st = os.stat(path)
+    key = hashlib.sha1(f"{FORMAT_VERSION}|{kind}|{_norm(path)}|{st.st_size}|{st.st_mtime_ns}|{extra}".encode())
+    return Path(cache_dir) / f"{kind}_{key.hexdigest()[:20]}.json"
+
+
+def _read_cache(f: Path):
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+    except (OSError, ValueError):
+        return None                          # unreadable entry: compute again
+
+
+def _write_cache(f: Path, data) -> None:
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp, f)
+
+
 def _cached_clip(path: str, cache_dir: str | Path | None) -> ClipAnalysis:
     if cache_dir is None:
         return analyze_clip(path)
-    st = os.stat(path)
-    key = hashlib.sha1(f"{FORMAT_VERSION}|{_norm(path)}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:20]
-    f = Path(cache_dir) / f"clip_{key}.json"
-    if f.exists():
+    f = _cache_file(cache_dir, "clip", path)
+    d = _read_cache(f)
+    if d is not None:
         try:
-            c = _clip_from(json.loads(f.read_text(encoding="utf-8")))
+            c = _clip_from(d)
             c.path = path
             return c
-        except (OSError, ValueError, KeyError):
-            pass                            # unreadable cache entry: analyze again
+        except (KeyError, TypeError, ValueError):
+            pass
     c = analyze_clip(path)
-    f.parent.mkdir(parents=True, exist_ok=True)
     d = _clip_dict(c)
-    d["tags"], d["drawable"] = [], []       # aspect-dependent, never cached
-    tmp = f.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d), encoding="utf-8")
-    os.replace(tmp, f)
+    d["tags"], d["drawable"] = [], []       # aspect-dependent: cached separately
+    _write_cache(f, d)
     return c
+
+
+def _cached_music(path: str, start: float | None, tpl: dict, cache_dir) -> Music:
+    args = (start, tpl["music"].get("half_beat_below_bpm", 100), tuple(tpl["music"].get("bpm_range", (75, 175))),
+            tpl["output"]["duration"]["target"] + 2.0)
+    f = _cache_file(cache_dir, "music", path, json.dumps(args)) if cache_dir else None
+    d = _read_cache(f) if f else None
+    if d is not None:
+        try:
+            return Music(path=path, start=d["start"], duration=d["duration"], tempo=d["tempo"],
+                         beat_period=d["beat_period"], grid=_unarr(d["grid"]), strength=_unarr(d["strength"]),
+                         on_beat=_unarr(d["on_beat"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+    m = analyze_music(path, *args)
+    if f:
+        _write_cache(f, {"start": float(m.start), "duration": float(m.duration), "tempo": float(m.tempo),
+                         "beat_period": float(m.beat_period), "grid": _arr(m.grid), "strength": _arr(m.strength),
+                         "on_beat": _arr(m.on_beat)})
+    return m
+
+
+def _cached_pass(clips: list[ClipAnalysis], field_name: str, size: str, cache_dir, run, report) -> None:
+    """Fill clip.<field_name> (tags or drawable) from the cache where possible; `run(todo, on_clip)` computes
+    the rest, which is then cached. Rejected clips are never looked at, so they aren't cached either."""
+    files = {id(c): _cache_file(cache_dir, field_name, c.path, size) for c in clips} if cache_dir else {}
+    todo = []
+    for c in clips:
+        d = _read_cache(files[id(c)]) if cache_dir and not c.rejected else None
+        if d is None:
+            todo.append(c)
+        elif field_name == "tags":
+            c.tags = [tuple(t) if t is not None else None for t in d]
+        else:
+            c.drawable = [tuple(x) for x in d]
+    done = len(clips) - len(todo)
+    report(done, len(clips))
+    if todo:
+        run(todo, lambda n, t, c: report(done + n, len(clips)))
+    for c in todo:
+        if cache_dir and not c.rejected:
+            _write_cache(files[id(c)], _plain(getattr(c, field_name)))
 
 
 def save_analysis(a: Analysis, path: str | Path) -> None:

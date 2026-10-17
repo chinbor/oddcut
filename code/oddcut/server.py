@@ -23,8 +23,9 @@ Job parameters (paths are absolute or relative to the project root):
     music    analysis, music, [music_start], [duration]  -> like analyze; only the song is analyzed again
     edit     analysis, plan, index, [clip]  -> like plan; swaps shot `index` to `clip` (or another good clip)
 
-Clip analyses and rendered sticker / drawn shots are cached under output/app/cache, so the same
-footage isn't decoded twice and a re-render only redoes the effect shots that changed.
+Clip analyses (incl. the sticker / drawn checks, per output size), song analyses and rendered sticker /
+drawn shots are cached under output/app/cache, so the same footage or song is only analyzed once and a
+re-render only redoes the effect shots that changed.
 """
 import argparse
 import json
@@ -157,7 +158,8 @@ def run_analyze(job: Job) -> dict:
 def run_music(job: Job) -> dict:
     p = job.params
     src = _path(p["analysis"])
-    a = with_music(load_analysis(src), _path(p["music"]), p.get("music_start"), p.get("duration"), job.on_progress)
+    a = with_music(load_analysis(src), _path(p["music"]), p.get("music_start"), p.get("duration"), job.on_progress,
+                   cache_dir=CACHE_DIR / "clips")
     out = _unique(src.parent / "analysis.json")
     save_analysis(a, out)
     return _analysis_result(a, out)
