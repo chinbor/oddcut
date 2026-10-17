@@ -914,9 +914,10 @@ def clean_plate(frame: np.ndarray, region: np.ndarray) -> np.ndarray:
 
 
 def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, timing: Timing, seed: int = 0,
-           background: str = "real"):
+           background: str = "real", style: str = "lineart"):
     """Yield output frames (RGB uint8, output size). background="real": only the subject is drawn,
-    on the real scene with the subject removed; "paper": the whole frame is a sheet of paper."""
+    on the real scene with the subject removed; "paper": the whole frame is a sheet of paper.
+    `style`: one of looks.DRAWN_STYLES (how the lines and the colour are put down)."""
     tm = timing.resolve()
     T, H, W, _ = frames_out.shape
     rng = np.random.default_rng(seed)
@@ -1050,6 +1051,51 @@ def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, tim
         yield frames_out[i]
 
 
+# ----------------------------------------------------------------------------- style picker thumbnails
+
+def _preview_scene(n: int = 360) -> tuple[np.ndarray, Subject]:
+    """A small made-up subject (an orange mug of coffee on a table) for the 「手绘风格选择」 thumbnails."""
+    img = np.zeros((n, n, 3), np.float32)
+    yy, xx = np.mgrid[0:n, 0:n].astype(np.float32) / n
+    img[:] = np.array([206, 192, 172]) * (1 - 0.15 * yy[..., None])           # wall
+    img[yy > 0.74] = np.array([150, 108, 78])                                  # table
+    mask = np.zeros((n, n), np.uint8)
+    x0, x1, y0, y1 = int(0.27 * n), int(0.67 * n), int(0.30 * n), int(0.80 * n)
+    cx, rx, ry = (x0 + x1) // 2, (x1 - x0) // 2, int(0.05 * n)
+    cv2.rectangle(mask, (x0, y0), (x1, y1 - ry), 1, -1)
+    cv2.ellipse(mask, (cx, y1 - ry), (rx, ry), 0, 0, 180, 1, -1)
+    cv2.ellipse(mask, (cx, y0), (rx, ry), 0, 0, 360, 1, -1)
+    cv2.ellipse(mask, (x1, int(0.53 * n)), (int(0.10 * n), int(0.12 * n)), 0, -80, 80, 1, int(0.05 * n))
+    body = mask > 0
+    shade = 1.0 - 0.45 * np.clip((xx - 0.30) / 0.45, 0, 1) ** 1.5                # light from the left
+    img[body] = (np.array([236, 122, 64]) * shade[..., None])[body]
+    band = body & (np.abs(yy - 0.58) < 0.035)
+    img[band] = (np.array([250, 240, 226]) * shade[..., None])[band]
+    top = np.zeros((n, n), np.uint8)
+    cv2.ellipse(top, (cx, y0), (int(rx * 0.86), int(ry * 0.7)), 0, 0, 360, 1, -1)
+    img[top > 0] = (86, 52, 34)
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    ys, xs = np.nonzero(body)
+    s = Subject("cup", "object", 0.95, np.array([xs.min(), ys.min(), xs.max(), ys.max()], np.float32), body, body)
+    return img, s
+
+
+def style_preview(style: str, size: int = 200) -> Image.Image:
+    """The finished drawing (before the reveal) of the preview mug in `style`."""
+    from .looks import check_drawn_style
+    style = check_drawn_style(style)
+    frame, s = _preview_scene()
+    strokes = build_strokes(frame, s, 1.0, seed=3)
+    regions, _ = build_fills(frame, s, 1.0, k=3, seed=3)
+    regions += feature_fills(frame, s, 1.0)
+    fps, tm = 12, Timing(line=1.0, color=1.0, reveal=0.5, tail=0.0)
+    last = round(tm.line * fps) + round(tm.color * fps) - 1
+    for i, f in enumerate(render(frame[None], fps, s, strokes, regions, tm, seed=3, background="paper", style=style)):
+        if i == last:
+            return Image.fromarray(f).resize((size, size), Image.LANCZOS)
+    raise RuntimeError("preview render ended early")
+
+
 # ----------------------------------------------------------------------------- run
 
 def load_shot(clip: str, start: float, dur: float, out_height: int | None = OUT_HEIGHT, aspect: float = ASPECT):
@@ -1092,7 +1138,9 @@ def debug_sheet(native: np.ndarray, s: Subject, strokes, regions, scale: float, 
 
 def run(clip: str, start: float, out: Path, timing: Timing | None = None, check: bool = True,
         seed: int = 0, out_height: int | None = OUT_HEIGHT, k: int = 4, background: str = "real",
-        aspect: float = ASPECT) -> dict:
+        aspect: float = ASPECT, style: str = "lineart") -> dict:
+    from .looks import check_drawn_style
+    style = check_drawn_style(style)
     timing = timing or Timing()
     tm = timing.resolve()
     native, frames_out, fps, scale = load_shot(clip, start, max(tm.tail, 0.4) + 0.1, out_height, aspect)
@@ -1104,7 +1152,7 @@ def run(clip: str, start: float, out: Path, timing: Timing | None = None, check:
     strokes = build_strokes(native[0], s, scale, seed)
     regions, palette = build_fills(frames_out[0], s, scale, k=k, seed=seed)
     regions += feature_fills(frames_out[0], s, scale)
-    rendered = list(render(frames_out, fps, s, strokes, regions, timing, seed, background))
+    rendered = list(render(frames_out, fps, s, strokes, regions, timing, seed, background, style))
     H, W = frames_out.shape[1:3]
     write_clip(rendered, out, fps, W, H)
 

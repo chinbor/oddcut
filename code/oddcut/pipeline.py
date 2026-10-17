@@ -17,7 +17,7 @@ import json
 import os
 import shutil
 import time
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +25,7 @@ import numpy as np
 from . import sticker_stage
 from .analyze import ClipAnalysis, analyze_clip, list_clips
 from .formats import apply_aspect, output_size
+from .looks import DEFAULT_DRAWN_STYLE, check_drawn_style, check_stickers, family_of, sticker_families
 from .music import Music, analyze_music
 from .planner import REUSE_PENALTY, Shot, assign_clips, plan_cuts
 from .progress import Progress, Reporter
@@ -66,6 +67,7 @@ class Plan:
     music: "MusicRef"
     seed: int
     shots: list[Shot]
+    looks: dict = field(default_factory=dict)   # {"stickers": [...] or None, "drawn_style": ...}
 
     @property
     def duration(self) -> float:
@@ -144,8 +146,13 @@ def analyze(clips_dir: str | Path, music_path: str | Path, template_path: str | 
     return Analysis(tpl, template_path, clips, music, opts, tagged)
 
 
-def plan(analysis: Analysis, seed: int = 7, progress: Progress | None = None) -> Plan:
-    """Same seed + same analysis -> same plan. Doesn't change `analysis` (works on copies of the clips)."""
+def plan(analysis: Analysis, seed: int = 7, progress: Progress | None = None, stickers=None,
+         drawn_style: str | None = None) -> Plan:
+    """Same seed + same analysis -> same plan. Doesn't change `analysis` (works on copies of the clips).
+    `stickers`: ids picked in 「贴纸选择」 (None = the original eyes / 💢 / ?; [] = no stickers).
+    `drawn_style`: the 「手绘风格选择」 style for the drawn shots (None = the default line art)."""
+    stickers = check_stickers(stickers) if stickers is not None else None
+    drawn_style = check_drawn_style(drawn_style)
     report = Reporter(progress)
     report("plan", "cuts", 0, 1)
     tpl = analysis.template
@@ -155,7 +162,8 @@ def plan(analysis: Analysis, seed: int = 7, progress: Progress | None = None) ->
     max_stickers = 0
     st_cfg = tpl.get("stickers", {})
     if analysis.stickers_tagged and st_cfg.get("enabled") and analysis.options.stickers:
-        taggable = [c for c in clips if any(c.tags)]
+        fams = sticker_families(stickers) if stickers is not None else {"object", "animal"}
+        taggable = [c for c in clips if any(t and t[1] in fams for t in c.tags)]
         max_stickers = min(st_cfg["density"]["per_video"][1], len(taggable))
     use_drawn = (tpl.get("drawn_opening", {}).get("enabled") and analysis.options.drawn
                  and any(c.drawable for c in clips))
@@ -163,11 +171,15 @@ def plan(analysis: Analysis, seed: int = 7, progress: Progress | None = None) ->
     use_mid = use_drawn and tpl.get("drawn_mid", {}).get("enabled", False) and len(drawn_clips) >= 2
 
     segments = plan_cuts(analysis.music, tpl, rng, max_stickers, use_drawn, use_mid)
-    shots = assign_clips(clips, segments, tpl, float(tpl["output"]["fps"]), rng)
+    shots = assign_clips(clips, segments, tpl, float(tpl["output"]["fps"]), rng, stickers)
+    if drawn_style != DEFAULT_DRAWN_STYLE:        # the default stays implicit: old plans render the same
+        for s in shots:
+            if s.drawn:
+                s.drawn = {**s.drawn, "style": drawn_style}
     m = analysis.music
     report("plan", "cuts", 1, 1)
     return Plan(tpl, analysis.template_path, MusicRef(m.path, float(m.start), float(m.tempo), float(m.beat_period)),
-                seed, shots)
+                seed, shots, {"stickers": stickers, "drawn_style": drawn_style})
 
 
 def with_music(analysis: Analysis, music_path: str | Path, music_start: float | None = None,
@@ -204,13 +216,20 @@ def replace_shot(analysis: Analysis, p: Plan, index: int, clip_path: str | None 
             continue
         by_path[k].used.append((sh.src_start, sh.src_start + (sh.t_end - sh.t_start)))
         usage[k] = usage.get(k, 0) + 1
-    n_animal = sum(1 for j, sh in enumerate(p.shots) if j != index and sh.sticker in ("anger", "question"))
+    allowed = p.looks.get("stickers")
+    families = sticker_families(allowed) if allowed is not None else None
+    placed = {"object": 0, "animal": 0}
+    for j, sh in enumerate(p.shots):
+        if j != index and family_of(sh.sticker) in placed:
+            placed[family_of(sh.sticker)] += 1
 
     def window(c: ClipAnalysis, want_sticker: bool) -> tuple[float, float, str | None] | None:
         """(start, score, sticker family) of the best free window, sticker-able ones first if wanted."""
         best = None
         for s in c.candidate_starts(length):
             hit = presence(c, s, length) if want_sticker else None
+            if hit and families is not None and hit[0] not in families:
+                hit = None
             sc = c.window_score(s, length) + (5.0 if hit else 0.0)
             if best is None or sc > best[1]:
                 best = (s, sc, hit[0] if hit else None)
@@ -249,7 +268,7 @@ def replace_shot(analysis: Analysis, p: Plan, index: int, clip_path: str | None 
     role, sticker, drawn = old.role, None, None
     if old.role == "sticker":
         if family:
-            sticker = rule_for(family, n_animal)
+            sticker = rule_for(family, placed[family], allowed)
         else:
             role = "body"
     elif old.role == "drawn":
@@ -451,7 +470,7 @@ def save_plan(p: Plan, path: str | Path) -> None:
         "kind": "oddcut.plan", "version": FORMAT_VERSION, "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "aspect": p.template["output"]["aspect"], "resolution": list(output_size(p.template)),
         "duration": round(p.duration, 3), "seed": p.seed,
-        "template_path": p.template_path, "template": p.template, "music": vars(p.music),
+        "template_path": p.template_path, "template": p.template, "music": vars(p.music), "looks": p.looks,
         # full precision here (the timeline.json rounds), so rendering a saved plan is frame-identical
         "shots": [{**s.to_dict(), "clip_path": s.clip.path, "src_start": s.src_start,
                    "t_start": s.t_start, "t_end": s.t_end} for s in p.shots],
@@ -467,4 +486,4 @@ def load_plan(path: str | Path) -> Plan:
     shots = [Shot(role=s["role"], clip=ClipRef(s["clip_path"]), src_start=s["src_start"], t_start=s["t_start"],
                   t_end=s["t_end"], frames=s["frames"], sticker=s.get("sticker"), drawn=s.get("drawn"))
              for s in d["shots"]]
-    return Plan(d["template"], d["template_path"], MusicRef(**d["music"]), d["seed"], shots)
+    return Plan(d["template"], d["template_path"], MusicRef(**d["music"]), d["seed"], shots, d.get("looks") or {})

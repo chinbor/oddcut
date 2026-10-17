@@ -10,6 +10,7 @@ With --parent-pid it exits when that process (the desktop app) goes away.
     GET  /api/health                 {"ok": true, "version": ...}
     GET  /api/templates              styles to pick from
     GET  /api/aspects                output aspect presets
+    GET  /api/looks                  stickers and drawn styles to pick from, with small preview pictures
     POST /api/jobs                   {"kind": "analyze" | "plan" | "render", ...}  -> {"id": ...}
     GET  /api/jobs/<id>              status, latest progress per stage, result or error
     POST /api/jobs/<id>/cancel       stops the job at its next progress report
@@ -17,7 +18,9 @@ With --parent-pid it exits when that process (the desktop app) goes away.
 Job parameters (paths are absolute or relative to the project root):
     analyze  clips, music, [template], [aspect], [duration], [stickers], [drawn], [work]
              -> {"analysis": path, "clips": [...], "music": {...}, "aspect": ...}
-    plan     analysis, [seed], [work]  -> {"plan": path, "shots": [...], "duration": s, "seed": n}
+    plan     analysis, [seed], [work], [stickers], [drawn_style]
+             -> {"plan": path, "shots": [...], "duration": s, "seed": n}
+             stickers: ids from /api/looks ([] = none; omitted = the original eyes / 💢 / ?)
     render   plan, [out], [preview]    -> {"video": path, "duration": s, "preview": bool}
              preview: low-res and fast, sticker / drawn shots plain unless rendered before
     music    analysis, music, [music_start], [duration]  -> like analyze; only the song is analyzed again
@@ -181,7 +184,7 @@ def run_plan(job: Job) -> dict:
     p = job.params
     analysis_path = _path(p["analysis"])
     seed = int(p["seed"]) if p.get("seed") is not None else secrets.randbelow(10 ** 6)
-    pl = plan(load_analysis(analysis_path), seed, job.on_progress)
+    pl = plan(load_analysis(analysis_path), seed, job.on_progress, p.get("stickers"), p.get("drawn_style"))
     work = _path(p.get("work")) or analysis_path.parent
     out = _unique(work / f"plan_{seed}.json")
     save_plan(pl, out)
@@ -213,6 +216,35 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render}
+
+
+_LOOKS: dict | None = None
+
+
+def list_looks() -> dict:
+    """The 「贴纸选择」 / 「手绘风格选择」 catalog with PNG previews (data URLs), drawn by the same code that
+    renders them. Built once per backend (the drawn previews take ~0.5 s each)."""
+    global _LOOKS
+    if _LOOKS is None:
+        import base64
+        import io
+
+        from .drawn_reveal import style_preview
+        from .looks import DRAWN_STYLES, STICKER_GROUPS, STICKERS
+        from .stickers import sticker_preview
+
+        def url(img) -> str:
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+            return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+        _LOOKS = {
+            "sticker_groups": [{"id": k, "name": v} for k, v in STICKER_GROUPS.items()],
+            "stickers": [{"id": s["id"], "name": s["name"], "group": s["group"], "families": list(s["families"]),
+                          "preview": url(sticker_preview(s["id"]))} for s in STICKERS],
+            "drawn_styles": [{**d, "preview": url(style_preview(d["id"], 160))} for d in DRAWN_STYLES],
+        }
+    return _LOOKS
 
 
 def start_job(kind: str, params: dict) -> Job:
@@ -283,6 +315,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "version": __version__, "root": str(PROJECT_ROOT)})
         if parts == ["api", "templates"]:
             return self._send(200, {"templates": list_templates()})
+        if parts == ["api", "looks"]:
+            try:
+                return self._send(200, list_looks())
+            except Exception as e:  # noqa: BLE001 - e.g. the optional vision packages are missing
+                traceback.print_exc(file=sys.stderr)
+                return self._send(500, {"error": str(e) or e.__class__.__name__})
         if parts == ["api", "aspects"]:
             return self._send(200, {"aspects": [{"id": k, "size": v} for k, v in ASPECTS.items()]})
         if len(parts) == 3 and parts[:2] == ["api", "jobs"] and parts[2] in JOBS:

@@ -548,6 +548,17 @@ def sticker_frame(rule_name: str, t: float, frame_idx: int, size: float, pop: fl
     raise ValueError(rule_name)
 
 
+def sticker_preview(rule_name: str, size: int = 96, t: float = 0.5) -> Image.Image:
+    """Still of a sticker for the 「贴纸选择」 picker: transparent, size x size, centred."""
+    img, angle = sticker_frame(rule_name, t, 0, size * 0.78, 1.0)
+    if angle:
+        img = img.rotate(angle, resample=Image.BICUBIC, expand=True)
+    img.thumbnail((size, size), Image.LANCZOS)
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas.alpha_composite(img, ((size - img.width) // 2, (size - img.height) // 2))
+    return canvas
+
+
 def composite(frame: np.ndarray, sticker: Image.Image, center, angle: float = 0.0) -> np.ndarray:
     if angle:
         sticker = sticker.rotate(angle, resample=Image.BICUBIC, expand=True)

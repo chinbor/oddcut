@@ -5,6 +5,7 @@ import numpy as np
 
 from .analyze import ClipAnalysis
 from .music import Music
+from .looks import sticker_families
 from .sticker_stage import presence, rule_for
 
 REUSE_PENALTY = 2.0   # a fresh clip should almost always beat reusing one
@@ -165,16 +166,18 @@ def _place_bookends(anchor: ClipAnalysis, hook_len: float, outro_len: float) -> 
     return best[1], best[2]
 
 
-def _sticker_candidate(usable, recent, prev_feat, length, lam, usage, rng, last_family=None, stickered=()):
+def _sticker_candidate(usable, recent, prev_feat, length, lam, usage, rng, last_family=None, stickered=(),
+                       families=None):
     """Best (clip, start, family) whose window keeps a sticker-able object in view the whole time.
-    Alternates families (eyes on objects / doodles on animals) so the stickers don't repeat."""
+    Alternates families (eyes on objects / doodles on animals) so the stickers don't repeat.
+    `families`: only these (the ones the selected stickers can sit on); None = any."""
     cands = []
     for c in usable:
         if any(c is r for r in recent) or not c.tags or id(c) in stickered:   # no repeats
             continue
         for s in c.candidate_starts(length):
             hit = presence(c, s, length)
-            if hit is None:
+            if hit is None or (families is not None and hit[0] not in families):
                 continue
             col, subj = c.feature_at(s)
             d = _color_dist(prev_feat[0], col) + 0.5 * float(np.linalg.norm(prev_feat[1] - subj))
@@ -239,7 +242,8 @@ def _choose_outro(usable, outro_len: float, exclude=()):
     return (best[1], best[2]) if best else None
 
 
-def assign_clips(clips: list[ClipAnalysis], segments, tpl: dict, fps: float, rng) -> list[Shot]:
+def assign_clips(clips: list[ClipAnalysis], segments, tpl: dict, fps: float, rng, stickers=None) -> list[Shot]:
+    """`stickers`: the selected sticker ids (None = the original eyes / 💢 / ? choice)."""
     usable = [c for c in clips if not c.rejected]
     if not usable:
         raise RuntimeError("all clips were rejected; nothing to edit")
@@ -309,7 +313,8 @@ def assign_clips(clips: list[ClipAnalysis], segments, tpl: dict, fps: float, rng
     for c in usable:
         if id(c) in reserved:
             usage[id(c)] = max(usage[id(c)], 1)
-    n_animal, last_family = 0, None
+    placed, last_family = {"object": 0, "animal": 0}, None    # stickers so far, per family
+    families = sticker_families(stickers) if stickers is not None else None
 
     for k, seg in enumerate(segments[1:-1], start=1):
         role, t0, t1 = seg[:3]
@@ -322,11 +327,11 @@ def assign_clips(clips: list[ClipAnalysis], segments, tpl: dict, fps: float, rng
         if role == "sticker":
             recent = [sh.clip for sh in shots[-3:]]
             pick = _sticker_candidate(usable, recent, prev_feat, length, lam, usage, rng, last_family,
-                                      {id(sh.clip) for sh in shots if sh.sticker} | reserved)
+                                      {id(sh.clip) for sh in shots if sh.sticker} | reserved, families)
             if pick is not None:
                 c, s, family = pick
-                rule = rule_for(family, n_animal)
-                n_animal += family == "animal"
+                rule = rule_for(family, placed[family], stickers)
+                placed[family] += 1
                 last_family = family
                 c.used.append((s, s + length))
                 usage[id(c)] += 1

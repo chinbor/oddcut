@@ -116,3 +116,25 @@ button.mini { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
   .preview { --max-h: 46vh; }
   .video-actions { justify-content: center; text-align: center; }
 }
+
+/* 贴纸选择 / 手绘风格选择 */
+.side h3 small { font-weight: 400; margin-left: 6px; color: var(--muted); letter-spacing: 0; }
+.look-group { display: flex; flex-direction: column; gap: 6px; }
+.look-label { font-size: 12px; color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; }
+.tile {
+  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 4px 5px;
+  border-radius: 10px; font-size: 12px; color: var(--muted);
+}
+.tile img { width: 40px; height: 40px; object-fit: contain; opacity: 0.45; filter: grayscale(0.6); }
+.tile.on { border-color: var(--accent); color: var(--text); background: #2b2420; }
+.tile.on img { opacity: 1; filter: none; }
+.styles { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+.styles.off { opacity: 0.45; }
+.style-card {
+  display: flex; flex-direction: column; gap: 2px; padding: 6px; border-radius: 10px; text-align: left;
+}
+.style-card img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; display: block; margin-bottom: 4px; }
+.style-card b { font-size: 13px; font-weight: 600; }
+.style-card small { color: var(--muted); font-size: 11px; line-height: 1.35; }
+.style-card.on { border-color: var(--accent); }

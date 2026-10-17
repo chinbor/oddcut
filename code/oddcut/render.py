@@ -109,7 +109,10 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
     for n, i in enumerate(effects):
         s = shots[i]
         if s.drawn:
+            style = s.drawn.get("style", "lineart")
             params = ("drawn", s.src_start, s.drawn["reveal_at"], s.drawn["tail"] + 0.15, background, full_w, full_h)
+            if style != "lineart":                  # keeps the cache keys of line-art shots rendered before
+                params += (style,)
         else:
             params = ("sticker", s.src_start, s.frames / fps + 0.3, s.sticker, full_w, full_h)
         cached = effects_cache / f"{_effect_key(s.clip.path, *params)}.mp4" if effects_cache else None
@@ -120,7 +123,7 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
         elif s.drawn:
             tmp = work_dir / f"drawn_{i:03d}.mp4"
             if render_drawn_source(s.clip.path, s.src_start, s.drawn["reveal_at"], s.drawn["tail"] + 0.15, tmp,
-                                   background, full_w / full_h, full_h):
+                                   background, full_w / full_h, full_h, style):
                 sources[i] = (str(_keep(tmp, cached)), 0.0)
             else:
                 report("render", "effects", n, len(effects),

@@ -88,10 +88,9 @@ def presence(clip: ClipAnalysis, start: float, length: float) -> tuple[str, str]
     return window[0][1], max(window, key=lambda t: t[3])[2]
 
 
-def rule_for(family: str, n_animal_so_far: int) -> str:
-    if family == "object":
-        return "eyes"
-    return "anger" if n_animal_so_far % 2 == 0 else "question"
+def rule_for(family: str, n_so_far: int, allowed=None) -> str | None:
+    from .looks import rule_for as pick
+    return pick(family, n_so_far, allowed)
 
 
 def render_sticker_source(path: str, src_start: float, dur: float, rule_name: str,
@@ -161,10 +160,11 @@ def tag_drawable(clips: list[ClipAnalysis], aspect: float = 3 / 4, on_clip=None)
 
 
 def render_drawn_source(path: str, src_start: float, reveal_at: float, tail: float, out: Path,
-                        background: str = "real", aspect: float = 3 / 4, out_height: int = 1440) -> bool:
+                        background: str = "real", aspect: float = 3 / 4, out_height: int = 1440,
+                        style: str = "lineart") -> bool:
     """Sketch -> colour -> reveal clip, already cropped to `aspect` at `out_height`. False if the subject
     can't be drawn."""
     from .drawn_reveal import Timing, run
     stats = run(path, src_start, out, Timing(reveal_at=reveal_at, tail=tail), check=True, background=background,
-                out_height=out_height, aspect=aspect)
+                out_height=out_height, aspect=aspect, style=style)
     return bool(stats.get("drawable")) and out.exists()

@@ -52,7 +52,9 @@ export default function App() {
   const [templates, setTemplates] = useState([])
   const [aspects, setAspects] = useState([])
   const [form, setForm] = useState({ clips: '', music: '', template: '', aspect: '9:16', duration: 18,
-                                     stickers: true, drawn: true })
+                                     stickerSel: ['eyes', 'anger', 'question'], drawn: true, drawnStyle: 'lineart' })
+  const [looks, setLooks] = useState({ stickers: [], sticker_groups: [], drawn_styles: [] })
+  const [planLooks, setPlanLooks] = useState(null)  // the selection the current plan was made with
   const [job, setJob] = useState(null)          // the running / last job, as the backend reports it
   const [analysis, setAnalysis] = useState(null)
   const [plan, setPlan] = useState(null)
@@ -72,6 +74,7 @@ export default function App() {
       setAspects(a.aspects.map((x) => x.id))
       if (t.templates[0]) setForm((f) => ({ ...f, template: f.template || t.templates[0].id,
                                             duration: t.templates[0].duration || f.duration }))
+      vc.api('GET', '/api/looks').then(setLooks).catch(() => {})   // pictures are optional
     }
     vc.onBackendReady(onReady)
     vc.onBackendExit((msg) => setBackend({ ready: false, error: msg }))
@@ -106,6 +109,12 @@ export default function App() {
 
   const busy = job && (job.status === 'running' || job.status === 'queued')
 
+  const lookParams = () => ({ stickers: form.stickerSel, drawn_style: form.drawnStyle })
+  const looksKey = JSON.stringify(lookParams())
+  const toggleSticker = (id) => setForm((f) => ({
+    ...f, stickerSel: f.stickerSel.includes(id) ? f.stickerSel.filter((x) => x !== id) : [...f.stickerSel, id],
+  }))
+
   // every new plan gets a quick preview right away; the full render is a separate click
   const showPlan = async (p) => {
     setPlan(p)
@@ -120,15 +129,17 @@ export default function App() {
     setPreview(null)
     const a = await runJob({ kind: 'analyze', clips: form.clips, music: form.music, template: form.template,
                              aspect: form.aspect, duration: Number(form.duration),
-                             stickers: form.stickers, drawn: form.drawn })
+                             stickers: true, drawn: form.drawn })
     setAnalysis(a)
     const rejected = a.clips.filter((c) => c.rejected)
     if (rejected.length) setNotice(`${rejected.length} 段素材没被选用：${rejected.map((c) => `${c.name}（${c.reason}）`).join('，')}`)
-    await showPlan(await runJob({ kind: 'plan', analysis: a.analysis }))
+    setPlanLooks(looksKey)
+    await showPlan(await runJob({ kind: 'plan', analysis: a.analysis, ...lookParams() }))
   })
 
   const rerollPlan = guard(async () => {
-    await showPlan(await runJob({ kind: 'plan', analysis: analysis.analysis }))
+    setPlanLooks(looksKey)
+    await showPlan(await runJob({ kind: 'plan', analysis: analysis.analysis, ...lookParams() }))
   })
 
   const changeMusic = guard(async () => {
@@ -138,7 +149,8 @@ export default function App() {
     setAnalysis(a)
     set('music')(music)
     setNotice(`已换成 ${a.music.name}（${a.music.tempo} BPM），镜头按新节拍重新排了`)
-    await showPlan(await runJob({ kind: 'plan', analysis: a.analysis }))
+    setPlanLooks(looksKey)
+    await showPlan(await runJob({ kind: 'plan', analysis: a.analysis, ...lookParams() }))
   })
 
   const swapShot = (index, clip) => guard(async () => {
@@ -209,8 +221,41 @@ export default function App() {
             <input type="range" min="10" max="40" value={form.duration} onChange={(e) => set('duration')(e.target.value)} />
             <b>{form.duration}s</b>
           </label>
-          <label className="row"><input type="checkbox" checked={form.stickers} onChange={(e) => set('stickers')(e.target.checked)} />贴纸（眼睛、💢、问号）</label>
-          <label className="row"><input type="checkbox" checked={form.drawn} onChange={(e) => set('drawn')(e.target.checked)} />手绘开场</label>
+        </section>
+
+        <section>
+          <h3>4 · 贴纸选择 <small>{form.stickerSel.length ? `已选 ${form.stickerSel.length} 种` : '不加贴纸'}</small></h3>
+          {looks.sticker_groups.filter((g) => looks.stickers.some((s) => s.group === g.id)).map((g) => (
+            <div key={g.id} className="look-group">
+              <span className="look-label">{g.name}</span>
+              <div className="tiles">
+                {looks.stickers.filter((s) => s.group === g.id).map((s) => (
+                  <button key={s.id} className={`tile ${form.stickerSel.includes(s.id) ? 'on' : ''}`}
+                          onClick={() => toggleSticker(s.id)} aria-pressed={form.stickerSel.includes(s.id)}
+                          title={s.families.includes('animal') && s.families.includes('object') ? '贴在动物或物体旁'
+                            : s.families.includes('animal') ? '贴在猫狗等动物头上' : '贴在杯子、碗等物体上'}>
+                    <img src={s.preview} alt="" />
+                    <span>{s.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </section>
+
+        <section>
+          <h3>5 · 手绘风格选择</h3>
+          <label className="row"><input type="checkbox" checked={form.drawn} onChange={(e) => set('drawn')(e.target.checked)} />用手绘开场（素材里有合适镜头时）</label>
+          <div className={`styles ${form.drawn ? '' : 'off'}`}>
+            {looks.drawn_styles.map((d) => (
+              <button key={d.id} className={`style-card ${form.drawnStyle === d.id ? 'on' : ''}`} disabled={!form.drawn}
+                      onClick={() => set('drawnStyle')(d.id)} aria-pressed={form.drawnStyle === d.id}>
+                <img src={d.preview} alt="" />
+                <b>{d.name}</b>
+                <small>{d.description}</small>
+              </button>
+            ))}
+          </div>
         </section>
 
         <button className="primary" disabled={!canStart} onClick={makePlan}>
@@ -225,6 +270,9 @@ export default function App() {
           </div>
         )}
         {error && <div className="banner bad">{error}</div>}
+        {plan && analysis && planLooks && planLooks !== looksKey && !busy && (
+          <div className="banner">贴纸或手绘风格改了，点「换一版」按新的选择重新排镜头。</div>
+        )}
         {notice && <div className="banner">{notice}</div>}
 
         {busy && (
