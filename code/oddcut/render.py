@@ -10,7 +10,7 @@ from .ffmpeg_utils import run
 from .formats import output_size
 from .planner import Shot
 from .progress import Reporter
-from .sticker_stage import render_drawn_source, render_sticker_source
+from .sticker_stage import render_drawn_source, render_manual_sticker, render_sticker_source
 
 
 def _escape_filter_path(p: str) -> str:
@@ -26,7 +26,8 @@ def preview_size(w: int, h: int) -> tuple[int, int]:
 
 
 # the code that draws each kind of effect shot: part of the cache key, so editing it never reuses stale shots
-_EFFECT_CODE = {"sticker": ("stickers.py",), "cartoon": ("stickers.py", "cartoons.py"), "drawn": ("drawn_reveal.py",)}
+_EFFECT_CODE = {"sticker": ("stickers.py",), "cartoon": ("stickers.py", "cartoons.py"), "drawn": ("drawn_reveal.py",),
+                "manual": ("stickers.py", "cartoons.py", "sticker_stage.py")}
 
 
 @functools.lru_cache(maxsize=None)
@@ -103,7 +104,8 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
            out_path: Path, work_dir: Path, report: Reporter | None = None,
            preview: bool = False, effects_cache: Path | None = None) -> float:
     """`music` needs .path and .start (a Music, or the MusicRef a saved plan loads into).
-    `preview`: small and fast; sticker / drawn shots come from `effects_cache` if there, else plain.
+    `preview`: small and fast; sticker / drawn shots come from `effects_cache` if there, else plain, except
+    hand-made ones (placed sticker, drawn shot chosen in the app): those are rendered at preview size.
     `effects_cache`: rendered sticker / drawn shots are kept there and reused by later renders."""
     report = report or Reporter(None)
     full_w, full_h = output_size(tpl)
@@ -122,22 +124,35 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
     background = tpl.get("drawn_opening", {}).get("background", "real")
     for n, i in enumerate(effects):
         s = shots[i]
+        manual = bool(s.sticker_at) or bool(s.drawn and s.drawn.get("manual"))
+        eh = h if preview and manual else full_h          # hand-made effects: preview-size in previews
         if s.drawn:
             style = s.drawn.get("style", "lineart")
             params = ("drawn", s.src_start, s.drawn["reveal_at"], s.drawn["tail"] + 0.15, background, full_w, full_h)
             params += (style, effect_rev("drawn"))
+            if manual:
+                params += (s.drawn.get("box"), bool(s.drawn.get("force")), eh)
+        elif s.sticker_at:
+            params = ("placed", s.src_start, s.frames / fps + 0.3, s.sticker, json.dumps(s.sticker_at, sort_keys=True),
+                      full_w, full_h, eh, effect_rev("manual"))
         else:
             params = ("sticker", s.src_start, s.frames / fps + 0.3, s.sticker, full_w, full_h,
                       effect_rev("cartoon" if "@" in s.sticker else "sticker"))
         cached = effects_cache / f"{_effect_key(s.clip.path, *params)}.mp4" if effects_cache else None
         if cached is not None and cached.exists():
             sources[i] = (str(cached), 0.0)
-        elif preview:
+        elif preview and not manual:
             pass                            # preview: plain footage in its place
+        elif s.sticker_at:
+            tmp = work_dir / f"placed_{i:03d}.mp4"
+            if render_manual_sticker(s.clip.path, s.src_start, s.frames / fps + 0.3, s.sticker, s.sticker_at, tmp,
+                                     full_w / full_h, eh):
+                sources[i] = (str(_keep(tmp, cached)), 0.0)
         elif s.drawn:
             tmp = work_dir / f"drawn_{i:03d}.mp4"
             if render_drawn_source(s.clip.path, s.src_start, s.drawn["reveal_at"], s.drawn["tail"] + 0.15, tmp,
-                                   background, full_w / full_h, full_h, style):
+                                   background, full_w / full_h, eh, style, s.drawn.get("box"),
+                                   bool(s.drawn.get("force"))):
                 sources[i] = (str(_keep(tmp, cached)), 0.0)
             else:
                 report("render", "effects", n, len(effects),

@@ -19,13 +19,17 @@ class Shot:
     t_start: float          # seconds on the output timeline
     t_end: float
     frames: int
-    sticker: str | None = None   # eyes | anger | question
+    sticker: str | None = None   # eyes | anger | question | car@object ... (see looks.py)
     drawn: dict | None = None    # drawn-reveal opening: {"reveal_at": s, "tail": s, "label": ...}
+    sticker_at: dict | None = None   # placed by hand in the app: {mode, keys: [{t, x, y, size}], in, out}
 
     def to_dict(self) -> dict:
-        return {"role": self.role, "clip": self.clip.name, "src_start": round(self.src_start, 3),
-                "t_start": round(self.t_start, 3), "t_end": round(self.t_end, 3), "frames": self.frames,
-                "sticker": self.sticker, "drawn": self.drawn}
+        d = {"role": self.role, "clip": self.clip.name, "src_start": round(self.src_start, 3),
+             "t_start": round(self.t_start, 3), "t_end": round(self.t_end, 3), "frames": self.frames,
+             "sticker": self.sticker, "drawn": self.drawn}
+        if self.sticker_at is not None:
+            d["sticker_at"] = self.sticker_at
+        return d
 
 
 def _section(tpl: dict, name: str) -> dict:

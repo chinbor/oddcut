@@ -11,6 +11,9 @@ With --parent-pid it exits when that process (the desktop app) goes away.
     GET  /api/templates              styles to pick from
     GET  /api/aspects                output aspect presets
     GET  /api/looks                  stickers and drawn styles to pick from, with small preview pictures
+    GET  /api/thumbs?plan=P          a small picture of every shot (timeline video track)
+    GET  /api/still?plan=P&index=I&t=S   one frame of shot I, S seconds in, cropped to the output aspect
+    GET  /api/waveform?plan=P        the song under the plan: peaks per 20 ms + beat grid (timeline music track)
     POST /api/jobs                   {"kind": "analyze" | "plan" | "render", ...}  -> {"id": ...}
     GET  /api/jobs/<id>              status, latest progress per stage, result or error
     POST /api/jobs/<id>/cancel       stops the job at its next progress report
@@ -25,6 +28,11 @@ Job parameters (paths are absolute or relative to the project root):
              preview: low-res and fast, sticker / drawn shots plain unless rendered before
     music    analysis, music, [music_start], [duration]  -> like analyze; only the song is analyzed again
     edit     analysis, plan, index, [clip]  -> like plan; swaps shot `index` to `clip` (or another good clip)
+    shot     analysis, plan, index, [sticker], [drawn]  -> like plan + "notes"; hand edits of one shot
+             sticker: null | {id, mode: follow | fixed, keys: [{t, x, y, size}], in, out}
+             drawn:   null | {style, box?, force?}   (a key left out = that part unchanged)
+    check    plan, index, [box]  -> {ok, found, reason, label, box, image}: can shot `index` be drawn?
+    plan also takes carry_from: an earlier plan whose hand edits move over (e.g. after a music job)
 
 Clip analyses (incl. the sticker / drawn checks, per output size), song analyses and rendered sticker /
 drawn shots are cached under output/app/cache, so the same footage or song is only analyzed once and a
@@ -44,8 +52,8 @@ from pathlib import Path
 from . import __version__
 from .formats import ASPECTS
 from .paths import OUTPUT_DIR, PROJECT_ROOT, TEMPLATE_DIR
-from .pipeline import (Options, analyze, load_analysis, load_plan, plan, render_plan, replace_shot, save_analysis,
-                       save_plan, with_music)
+from .pipeline import (KEEP, Options, analyze, carry_manual, edit_shot, has_manual, load_analysis, load_plan, plan,
+                       render_plan, replace_shot, save_analysis, save_plan, with_music)
 from .progress import ProgressEvent
 
 APP_DIR = OUTPUT_DIR / "app"
@@ -145,10 +153,12 @@ def _analysis_result(a, out: Path) -> dict:
                       "start": round(a.music.start, 2)}}
 
 
-def _plan_result(pl, out: Path) -> dict:
+def _plan_result(pl, out: Path, notes=None) -> dict:
     return {"plan": str(out), "seed": pl.seed, "duration": round(pl.duration, 2),
-            "aspect": pl.template["output"]["aspect"],
-            "shots": [{**s.to_dict(), "clip_path": s.clip.path} for s in pl.shots]}
+            "aspect": pl.template["output"]["aspect"], "fps": float(pl.template["output"]["fps"]),
+            "manual": has_manual(pl), "notes": notes or [],
+            "shots": [{**s.to_dict(), "clip_path": s.clip.path, "src_start": s.src_start,
+                       "t_start": s.t_start, "t_end": s.t_end} for s in pl.shots]}
 
 
 def _unique(path: Path) -> Path:
@@ -184,11 +194,125 @@ def run_plan(job: Job) -> dict:
     p = job.params
     analysis_path = _path(p["analysis"])
     seed = int(p["seed"]) if p.get("seed") is not None else secrets.randbelow(10 ** 6)
-    pl = plan(load_analysis(analysis_path), seed, job.on_progress, p.get("stickers"), p.get("drawn_style"))
+    a = load_analysis(analysis_path)
+    pl = plan(a, seed, job.on_progress, p.get("stickers"), p.get("drawn_style"))
+    notes = []
+    if p.get("carry_from"):
+        pl, notes = carry_manual(load_plan(_path(p["carry_from"])), pl, a)
     work = _path(p.get("work")) or analysis_path.parent
     out = _unique(work / f"plan_{seed}.json")
     save_plan(pl, out)
-    return _plan_result(pl, out)
+    return _plan_result(pl, out, notes)
+
+
+def run_shot(job: Job) -> dict:
+    p = job.params
+    plan_path = _path(p["plan"])
+    job.on_progress(ProgressEvent("shot", "edit", 0, 1))
+    pl, notes = edit_shot(load_analysis(_path(p["analysis"])), load_plan(plan_path), int(p["index"]),
+                          p["sticker"] if "sticker" in p else KEEP, p["drawn"] if "drawn" in p else KEEP)
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    job.on_progress(ProgressEvent("shot", "edit", 1, 1))
+    return _plan_result(pl, out, notes)
+
+
+def run_check(job: Job) -> dict:
+    from .drawn_reveal import check_shot
+    from .formats import output_size
+    p = job.params
+    pl = load_plan(_path(p["plan"]))
+    s = pl.shots[int(p["index"])]
+    w, h = output_size(pl.template)
+    job.on_progress(ProgressEvent("check", "check", 0, 1))
+    r = check_shot(s.clip.path, s.src_start, w / h, p.get("box"))
+    if r.get("image") is not None:
+        r["image"] = _data_url(r["image"])
+    job.on_progress(ProgressEvent("check", "check", 1, 1))
+    return r
+
+
+def _data_url(img, fmt: str = "JPEG") -> str:
+    import base64
+    import io
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, fmt, quality=82) if fmt == "JPEG" else img.save(buf, fmt)
+    return f"data:image/{fmt.lower()};base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+_FRAMES: dict = {}
+
+
+def frame_at(clip: str, t: float, aspect: float, height: int) -> str:
+    """One frame of `clip` at `t` seconds, centre-cropped to `aspect` (w/h), as a JPEG data URL (cached)."""
+    key = (clip, round(t, 3), round(aspect, 5), height)
+    if key not in _FRAMES:
+        import subprocess
+
+        from PIL import Image
+        crop = f"crop=w='min(iw,ih*{aspect:.6f})':h='min(ih,iw/{aspect:.6f})',scale=-2:{height}"
+        r = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", clip, "-frames:v", "1",
+                            "-vf", crop, "-f", "image2pipe", "-vcodec", "png", "-"],
+                           stdin=subprocess.DEVNULL, capture_output=True, check=True)
+        import io
+        _FRAMES[key] = _data_url(Image.open(io.BytesIO(r.stdout)))
+        if len(_FRAMES) > 600:
+            _FRAMES.pop(next(iter(_FRAMES)))
+    return _FRAMES[key]
+
+
+def plan_thumbs(plan_path: Path) -> list[str]:
+    from .formats import output_size
+    pl = load_plan(plan_path)
+    w, h = output_size(pl.template)
+    return [frame_at(s.clip.path, s.src_start + 0.1, w / h, 96) for s in pl.shots]
+
+
+def plan_still(plan_path: Path, index: int, t: float) -> dict:
+    from .formats import output_size
+    pl = load_plan(plan_path)
+    w, h = output_size(pl.template)
+    s = pl.shots[index]
+    t = min(max(0.0, t), max(0.0, s.t_end - s.t_start - 0.02))
+    return {"image": frame_at(s.clip.path, s.src_start + t, w / h, 640), "t": t}
+
+
+_WAVES: dict = {}
+
+
+def plan_waveform(plan_path: Path) -> dict:
+    """Peaks of the song under the plan (one per 20 ms of timeline) plus the beat grid, for the music track."""
+    pl = load_plan(plan_path)
+    dur = pl.duration
+    key = (pl.music.path, round(pl.music.start, 3), round(dur, 3))
+    if key not in _WAVES:
+        import subprocess
+
+        import numpy as np
+        sr = 4000
+        r = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{pl.music.start:.3f}", "-t", f"{dur:.3f}", "-i", pl.music.path,
+                            "-ac", "1", "-ar", str(sr), "-f", "s16le", "-"], stdin=subprocess.DEVNULL, capture_output=True,
+                           check=True)
+        x = np.abs(np.frombuffer(r.stdout, np.int16).astype(np.float32))
+        hop = sr // 50
+        n = max(1, len(x) // hop)
+        peaks = x[: n * hop].reshape(n, hop).max(axis=1)
+        peaks = peaks / max(1.0, float(np.percentile(peaks, 99)))
+        _WAVES[key] = {"step": 0.02, "peaks": [round(float(v), 3) for v in np.clip(peaks, 0, 1)]}
+    out = dict(_WAVES[key])
+    grid = pl.looks.get("grid")
+    if grid is None:
+        try:
+            from .pipeline import _cached_music
+            m = _cached_music(pl.music.path, pl.music.start, pl.template, CACHE_DIR / "clips")
+            grid = {"t": [round(float(v), 3) for v in m.grid if v <= dur + 0.01],
+                    "strength": [round(float(v), 3) for v, g in zip(m.strength, m.grid) if g <= dur + 0.01],
+                    "on_beat": [bool(v) for v, g in zip(m.on_beat, m.grid) if g <= dur + 0.01]}
+        except Exception:  # noqa: BLE001 - the waveform alone is still useful
+            grid = {"t": [], "strength": [], "on_beat": []}
+    out["grid"] = grid
+    out["tempo"] = round(pl.music.tempo, 1)
+    return out
 
 
 def run_edit(job: Job) -> dict:
@@ -215,7 +339,8 @@ def run_render(job: Job) -> dict:
             "timeline": str(out.with_suffix(".timeline.json"))}
 
 
-RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render}
+RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
+           "shot": run_shot, "check": run_check}
 
 
 _LOOKS: dict | None = None
@@ -314,6 +439,19 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         parts = self.path.split("?")[0].strip("/").split("/")
+        if parts[:1] == ["api"] and len(parts) == 2 and parts[1] in ("thumbs", "still", "waveform"):
+            from urllib.parse import parse_qs, urlsplit
+            q = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
+            try:
+                plan_path = _path(q["plan"])
+                if parts[1] == "thumbs":
+                    return self._send(200, {"thumbs": plan_thumbs(plan_path)})
+                if parts[1] == "still":
+                    return self._send(200, plan_still(plan_path, int(q["index"]), float(q.get("t", 0))))
+                return self._send(200, plan_waveform(plan_path))
+            except Exception as e:  # noqa: BLE001 - reported to the UI
+                traceback.print_exc(file=sys.stderr)
+                return self._send(400, {"error": str(e) or e.__class__.__name__})
         if parts == ["api", "health"]:
             return self._send(200, {"ok": True, "version": __version__, "root": str(PROJECT_ROOT)})
         if parts == ["api", "templates"]:

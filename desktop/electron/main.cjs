@@ -1,12 +1,12 @@
 // Oddcut main process: starts the oddcut backend (python -m oddcut.server on 127.0.0.1), relays the
 // renderer's API calls to it over IPC (the token never reaches the page), and serves rendered videos
 // to the page through the media:// scheme.
-const { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, protocol, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 const readline = require('node:readline')
-const { pathToFileURL } = require('node:url')
+const { Readable } = require('node:stream')
 
 // desktop/ lives inside the odd_analysis project; ODDCUT_ROOT / ODDCUT_PYTHON override the guesses
 const ROOT = process.env.ODDCUT_ROOT || path.resolve(__dirname, '..', '..')
@@ -89,6 +89,38 @@ function isMediaAllowed(file) {
   return MEDIA_ROOTS.some((r) => resolved.toLowerCase().startsWith(path.resolve(r).toLowerCase() + path.sep))
 }
 
+const MEDIA_TYPES = { '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.m4v': 'video/mp4',
+                      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png' }
+
+// media://v/?p=<file>. Answers byte ranges (206) so <video> can seek: without them the player sees an
+// unseekable stream and every scrub jumps back to 0.
+async function serveMedia(file, range) {
+  if (!isMediaAllowed(file)) return new Response('forbidden', { status: 403 })
+  let size
+  try {
+    size = (await fs.promises.stat(file)).size
+  } catch {
+    return new Response('not found', { status: 404 })
+  }
+  const type = MEDIA_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream'
+  const m = range && /bytes=(\d*)-(\d*)/.exec(range)
+  if (m && size > 0) {
+    let start = m[1] === '' ? Math.max(0, size - Number(m[2])) : Number(m[1])
+    let end = m[1] !== '' && m[2] !== '' ? Math.min(Number(m[2]), size - 1) : size - 1
+    if (start >= size || start > end) {
+      return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${size}` } })
+    }
+    return new Response(Readable.toWeb(fs.createReadStream(file, { start, end })), {
+      status: 206,
+      headers: { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Content-Length': String(end - start + 1),
+                 'Content-Range': `bytes ${start}-${end}/${size}` },
+    })
+  }
+  return new Response(Readable.toWeb(fs.createReadStream(file)), {
+    status: 200, headers: { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Content-Length': String(size) },
+  })
+}
+
 function registerIpc() {
   ipcMain.handle('backend:status', () => ({
     ready: !!backend, error: backendError, root: ROOT, version: backend?.version,
@@ -134,11 +166,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   // media://v/?p=<absolute path>: rendered videos and source clips for <video>, nothing outside the project
-  protocol.handle('media', (req) => {
-    const file = new URL(req.url).searchParams.get('p') || ''
-    if (!isMediaAllowed(file)) return new Response('forbidden', { status: 403 })
-    return net.fetch(pathToFileURL(file).toString(), { headers: req.headers })
-  })
+  protocol.handle('media', (req) => serveMedia(new URL(req.url).searchParams.get('p') || '', req.headers.get('range')))
   registerIpc()
   createWindow()
   await startBackend()

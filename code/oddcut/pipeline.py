@@ -278,8 +278,168 @@ def replace_shot(analysis: Analysis, p: Plan, index: int, clip_path: str | None 
     elif old.role == "drawn":
         role = "hook" if index == 0 else "breath"
     shots = list(p.shots)
-    shots[index] = replace(old, role=role, clip=ClipRef(c.path), src_start=float(start), sticker=sticker, drawn=drawn)
+    sticker_at = None
+    if old.sticker_at:                       # a hand-placed sticker stays where the user put it
+        sticker, sticker_at = old.sticker, old.sticker_at
+    shots[index] = replace(old, role=role, clip=ClipRef(c.path), src_start=float(start), sticker=sticker, drawn=drawn,
+                           sticker_at=sticker_at)
     return replace(p, shots=shots)
+
+
+# ----------------------------------------------------------------------------- hand edits (desktop app)
+
+KEEP = object()          # edit_shot: leave this part of the shot as it is
+
+
+def _frames_between(a: float, b: float, fps: float) -> int:
+    return int(round(b * fps)) - int(round(a * fps))
+
+
+def _check_place(place: dict) -> dict:
+    keys = []
+    for k in place.get("keys") or []:
+        keys.append({"t": max(0.0, float(k["t"])), "x": min(1.0, max(0.0, float(k["x"]))),
+                     "y": min(1.0, max(0.0, float(k["y"]))), "size": min(0.8, max(0.04, float(k.get("size", 0.22))))})
+    if not keys:
+        raise ValueError("a placed sticker needs at least one keyframe")
+    mode = place.get("mode", "follow")
+    if mode not in ("follow", "fixed"):
+        raise ValueError(f"unknown sticker mode {mode!r}")
+    out = {"mode": mode, "keys": sorted(keys, key=lambda k: k["t"]), "in": max(0.0, float(place.get("in") or 0.0))}
+    if place.get("out") is not None:
+        out["out"] = float(place["out"])
+    return out
+
+
+def edit_shot(analysis: Analysis, p: Plan, index: int, sticker=KEEP, drawn=KEEP) -> tuple[Plan, list[str]]:
+    """Hand edits from the app's shot inspector. Returns the new plan and notes for the user (Chinese).
+    sticker: None = no sticker; {"id", "mode", "keys", "in", "out"} = placed by hand (any catalog sticker).
+    drawn:   None = not drawn; {"style", "box"?, "force"?} = draw this shot. A drawn shot needs time to draw,
+             so a short one is lengthened to a strong beat; the following shot(s) give up that time (their
+             cuts stay on the beat grid and the total length is unchanged)."""
+    if not 0 <= index < len(p.shots):
+        raise IndexError(f"shot {index} out of range (plan has {len(p.shots)})")
+    tpl = p.template
+    fps = float(tpl["output"]["fps"])
+    shots = [replace(s) for s in p.shots]
+    s = shots[index]
+    notes: list[str] = []
+    if sticker is not KEEP:
+        if sticker is None:
+            s.sticker, s.sticker_at = None, None
+            if s.role == "sticker":
+                s.role = "body"
+        else:
+            sid = check_stickers([sticker["id"]])[0]
+            s.sticker, s.sticker_at = sid, _check_place(sticker)
+            if s.drawn:                       # one effect per shot
+                s.drawn = None
+                s.role = "hook" if index == 0 else "body"
+                notes.append("这个镜头原来的手绘已换成贴纸")
+    if drawn is not KEEP:
+        if drawn is None:
+            if s.drawn:
+                s.drawn = None
+                s.role = "hook" if index == 0 else ("outro" if index == len(shots) - 1 else "body")
+        else:
+            style = check_drawn_style(drawn.get("style"))
+            cfg = tpl.get("drawn_opening" if index == 0 else "drawn_mid") or tpl["drawn_opening"]
+            lo, hi = cfg.get("reveal_window", (1.0, 1.7))
+            rs = float(cfg.get("reveal_seconds", 0.4))
+            tlo, thi = cfg.get("tail", (0.5, 1.1))
+            grid, strength = analysis.music.grid, analysis.music.strength
+            t0 = s.t_start
+            m = (grid >= t0 + lo) & (grid <= t0 + hi)
+            reveal = float(grid[m][np.argmax(strength[m])]) if m.any() else t0 + (lo + hi) / 2
+            need = reveal + rs + tlo
+            if s.t_end < need - 1e-6:
+                if index == len(shots) - 1:
+                    raise ValueError("最后一个镜头太短，放不下手绘（画线、上色、变回实拍至少要 1.9 秒）")
+                em = (grid >= need) & (grid <= reveal + rs + thi)
+                new_end = float(grid[em][np.argmax(strength[em])]) if em.any() else need
+                clip_len = next((c.duration for c in analysis.clips if _norm(c.path) == _norm(s.clip.path)), None)
+                if clip_len is not None and s.src_start + (new_end - t0) > clip_len:
+                    raise ValueError(f"这段素材（{s.clip.name}）从这里开始不够长，放不下手绘")
+                old_len = s.t_end - t0
+                k = index + 1
+                merged = 0
+                while k < len(shots) and shots[k].t_start < new_end - 1e-6:
+                    nxt = shots[k]
+                    if nxt.t_end - new_end >= 0.4 or k == len(shots) - 1:
+                        if nxt.t_end - new_end < 0.4:
+                            raise ValueError("后面只剩结尾镜头，没有足够的时间拉长这个镜头")
+                        cut = new_end - nxt.t_start
+                        nxt.src_start += cut
+                        nxt.t_start = new_end
+                        nxt.frames = _frames_between(nxt.t_start, nxt.t_end, fps)
+                        if nxt.sticker_at:
+                            nxt.sticker_at = _shift_keys(nxt.sticker_at, -cut)
+                        break
+                    shots.pop(k)              # swallowed whole by the longer drawn shot
+                    merged += 1
+                s.t_end = new_end
+                s.frames = _frames_between(t0, new_end, fps)
+                notes.append(f"手绘需要时间，这个镜头从 {old_len:.1f} 秒拉长到 {new_end - t0:.1f} 秒（停在重拍上）"
+                             + (f"，后面 {merged} 个镜头被合并掉了" if merged else "，后一个镜头相应缩短"))
+            s.sticker, s.sticker_at = None, None
+            s.role = "drawn"
+            meta = {"reveal_at": round(reveal - t0, 3), "tail": round(s.t_end - reveal - rs, 3),
+                    "label": drawn.get("label") or (s.drawn or {}).get("label") or "手绘", "manual": True}
+            if style != DEFAULT_DRAWN_STYLE:
+                meta["style"] = style
+            if drawn.get("box"):
+                meta["box"] = [round(min(1.0, max(0.0, float(v))), 4) for v in drawn["box"]]
+            if drawn.get("force"):
+                meta["force"] = True
+            s.drawn = meta
+    return replace(p, shots=shots), notes
+
+
+def _shift_keys(place: dict, dt: float) -> dict:
+    """Keyframe times after the shot start moved by dt (the shot now starts later / earlier in its clip)."""
+    out = dict(place)
+    out["keys"] = [{**k, "t": max(0.0, k["t"] + dt)} for k in place["keys"]]
+    out["in"] = max(0.0, float(place.get("in") or 0.0) + dt)
+    if place.get("out") is not None:
+        out["out"] = max(0.0, float(place["out"]) + dt)
+    return out
+
+
+def has_manual(p: Plan) -> bool:
+    return any(s.sticker_at or (s.drawn and s.drawn.get("manual")) for s in p.shots)
+
+
+def carry_manual(old: Plan, new: Plan, analysis: Analysis) -> tuple[Plan, list[str]]:
+    """Hand edits of `old` re-applied to `new` (another song or plan): each goes to the new shot that shows the
+    same footage (same clip, overlapping time in it). Ones that no longer have a home are dropped and listed."""
+    notes, dropped = [], 0
+    for s in old.shots:
+        manual_drawn = bool(s.drawn and s.drawn.get("manual"))
+        if not (s.sticker_at or manual_drawn):
+            continue
+        best, overlap = None, 0.0
+        for j, n in enumerate(new.shots):
+            if _norm(n.clip.path) != _norm(s.clip.path):
+                continue
+            ov = min(s.src_start + (s.t_end - s.t_start), n.src_start + (n.t_end - n.t_start)) - max(s.src_start, n.src_start)
+            if ov > overlap:
+                best, overlap = j, ov
+        if best is None:
+            dropped += 1
+            continue
+        n = new.shots[best]
+        try:
+            if s.sticker_at:
+                new, _ = edit_shot(analysis, new, best, sticker={"id": s.sticker.partition("@")[0],
+                                                                 **_shift_keys(s.sticker_at, s.src_start - n.src_start)})
+            else:
+                new, more = edit_shot(analysis, new, best, drawn={**s.drawn, "style": s.drawn.get("style")})
+                notes += more
+        except ValueError:
+            dropped += 1
+    if dropped:
+        notes.append(f"{dropped} 处手动加的贴纸 / 手绘在新方案里找不到对应镜头，没有保留")
+    return new, notes
 
 
 def render_plan(p: Plan, out_path: str | Path, keep_temp: bool = False,
@@ -488,6 +648,7 @@ def load_plan(path: str | Path) -> Plan:
     if d.get("kind") != "oddcut.plan":
         raise ValueError(f"{path} is not an oddcut plan file")
     shots = [Shot(role=s["role"], clip=ClipRef(s["clip_path"]), src_start=s["src_start"], t_start=s["t_start"],
-                  t_end=s["t_end"], frames=s["frames"], sticker=s.get("sticker"), drawn=s.get("drawn"))
+                  t_end=s["t_end"], frames=s["frames"], sticker=s.get("sticker"), drawn=s.get("drawn"),
+                  sticker_at=s.get("sticker_at"))
              for s in d["shots"]]
     return Plan(d["template"], d["template_path"], MusicRef(**d["music"]), d["seed"], shots, d.get("looks") or {})

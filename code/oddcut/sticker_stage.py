@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 
 from .analyze import ClipAnalysis
+import cv2
+
 from .ffmpeg_utils import probe, read_frames
 
 TAG_FPS = 1.0
@@ -177,10 +179,114 @@ def tag_drawable(clips: list[ClipAnalysis], aspect: float = 3 / 4, on_clip=None)
 
 def render_drawn_source(path: str, src_start: float, reveal_at: float, tail: float, out: Path,
                         background: str = "real", aspect: float = 3 / 4, out_height: int = 1440,
-                        style: str = "lineart") -> bool:
+                        style: str = "lineart", box=None, force: bool = False) -> bool:
     """Sketch -> colour -> reveal clip, already cropped to `aspect` at `out_height`. False if the subject
     can't be drawn."""
     from .drawn_reveal import Timing, run
-    stats = run(path, src_start, out, Timing(reveal_at=reveal_at, tail=tail), check=True, background=background,
-                out_height=out_height, aspect=aspect, style=style)
-    return bool(stats.get("drawable")) and out.exists()
+    stats = run(path, src_start, out, Timing(reveal_at=reveal_at, tail=tail), check=not force, background=background,
+                out_height=out_height, aspect=aspect, style=style, box=box)
+    return (force or bool(stats.get("drawable"))) and out.exists()
+
+
+# ----------------------------------------------------------------------------- manual stickers (desktop app)
+
+def _flow_path(gray: list, start: int, end: int, x: float, y: float, r: int) -> np.ndarray:
+    """Path of the point (x, y) of frame `start` to frame `end` (either direction, both included): LK optical
+    flow on corners around it, median motion per step (robust to a few bad tracks), re-seeded when too few
+    survive. No detector involved, so it works on any footage."""
+    step = 1 if end >= start else -1
+    idx = list(range(start, end + step, step))
+    path = np.zeros((len(idx), 2), np.float32)
+    path[0] = (x, y)
+
+    def seed(g, cx, cy):
+        m = np.zeros_like(g)
+        cv2.circle(m, (int(cx), int(cy)), r, 255, -1)
+        return cv2.goodFeaturesToTrack(g, 40, 0.01, max(3, r // 8), mask=m)
+
+    pts = seed(gray[idx[0]], x, y)
+    for k in range(1, len(idx)):
+        a, b = gray[idx[k - 1]], gray[idx[k]]
+        if pts is not None and len(pts) >= 4:
+            nxt, st, _ = cv2.calcOpticalFlowPyrLK(a, b, pts, None, winSize=(21, 21), maxLevel=3)
+            ok = st[:, 0] == 1
+            if ok.sum() >= 3:
+                path[k] = path[k - 1] + np.median((nxt[ok] - pts[ok])[:, 0, :], axis=0)
+                pts = nxt[ok].reshape(-1, 1, 2)
+                continue
+        path[k] = path[k - 1]
+        pts = seed(b, *path[k])
+    return path
+
+
+def sticker_path(frames: np.ndarray, fps: float, place: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Per-frame centre (px) and size (px) of a placed sticker. `place` = {mode: follow | fixed,
+    keys: [{t: s from shot start, x, y (0..1 of the frame), size (share of the short side)}, ...]}.
+    fixed: positions interpolate between keyframes. follow: from every keyframe the point is tracked forward
+    to the next one (and back from the first to the shot start), so a corrected keyframe restarts the
+    track there. Sizes interpolate linearly either way."""
+    T, H, W, _ = frames.shape
+    keys = sorted(place.get("keys") or [{"t": 0.0, "x": place.get("x", 0.5), "y": place.get("y", 0.5),
+                                         "size": place.get("size", 0.22)}], key=lambda k: k["t"])
+    ki = [int(np.clip(round(k["t"] * fps), 0, T - 1)) for k in keys]
+    kx = np.array([k["x"] * W for k in keys], np.float32)
+    ky = np.array([k["y"] * H for k in keys], np.float32)
+    ks = np.array([k.get("size", 0.22) * min(W, H) for k in keys], np.float32)
+    frame_idx = np.arange(T)
+    sizes = np.interp(frame_idx, ki, ks)
+    if place.get("mode", "follow") != "follow":
+        return np.stack([np.interp(frame_idx, ki, kx), np.interp(frame_idx, ki, ky)], 1), sizes
+    gray = [cv2.cvtColor(f, cv2.COLOR_RGB2GRAY) for f in frames]
+    r = int(0.08 * min(W, H))
+    centers = np.zeros((T, 2), np.float32)
+    if ki[0] > 0:
+        centers[: ki[0] + 1] = _flow_path(gray, ki[0], 0, kx[0], ky[0], r)[::-1]
+    for j, s in enumerate(ki):
+        e = ki[j + 1] if j + 1 < len(ki) else T - 1
+        if e > s:
+            centers[s:e + 1] = _flow_path(gray, s, e, kx[j], ky[j], r)
+        else:
+            centers[s] = (kx[j], ky[j])
+        if j + 1 < len(ki):                  # the next keyframe is where the user put it, not where flow drifted
+            centers[e] = (kx[j + 1], ky[j + 1])
+    from scipy.ndimage import gaussian_filter1d
+    return gaussian_filter1d(centers, 0.8, axis=0, mode="nearest"), sizes
+
+
+def render_manual_sticker(path: str, src_start: float, dur: float, sticker: str, place: dict, out: Path,
+                          aspect: float, out_height: int | None = None) -> bool:
+    """A sticker the user placed (see sticker_path); `place` may also carry `in` / `out` (seconds from the
+    shot start) for when it pops in and out. With `out_height` the work happens at that (preview) size."""
+    from .cartoons import NAMES as CARTOONS
+    from .cartoons import cartoon_frame
+    from .stickers import composite, presence, read_clip, sticker_frame, write_clip
+    frames, fps = read_clip(path, src_start, dur)
+    if len(frames) == 0:
+        return False
+    T, H, W, _ = frames.shape
+    x0, y0, cw, ch = _center_crop_box(W, H, aspect)
+    frames = np.ascontiguousarray(frames[:, y0:y0 + ch, x0:x0 + cw])
+    if out_height and out_height != ch:      # preview: work at the small size, it's much faster
+        ow = int(round(cw * out_height / ch)) // 2 * 2
+        frames = np.stack([cv2.resize(f, (ow, out_height), interpolation=cv2.INTER_AREA) for f in frames])
+        T, ch, cw = len(frames), out_height, ow
+    centers, sizes = sticker_path(frames, fps, place)
+    sid = sticker.partition("@")[0]
+    t_in = float(place.get("in") or 0.0) + APPEAR
+    t_out = place.get("out")
+    shown = np.arange(T) / fps >= t_in - APPEAR
+    if t_out is not None:
+        shown &= np.arange(T) / fps < float(t_out)
+    pops = presence(shown, fps, 0.0)
+
+    def frames_out():
+        for i in range(T):
+            t = max(0.0, i / fps - t_in)
+            if sid in CARTOONS:
+                img, ang = cartoon_frame(sid, t, i, sizes[i], pops[i])
+            else:
+                img, ang = sticker_frame(sid, t + APPEAR, i, sizes[i], pops[i], APPEAR)
+            yield composite(frames[i], img, centers[i], ang) if img is not None else frames[i]
+
+    write_clip(frames_out(), out, fps, cw, ch)
+    return True

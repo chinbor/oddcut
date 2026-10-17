@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
+import Inspector from './Inspector.jsx'
+import Timeline from './Timeline.jsx'
 
 const vc = window.oddcut
 
@@ -8,6 +10,8 @@ const STAGES = {
   plan: [['cuts', 1, '生成剪辑方案']],
   music: [['music', 1, '分析新音乐的节拍']],
   edit: [['edit', 1, '替换镜头']],
+  shot: [['edit', 1, '应用修改']],
+  check: [['check', 1, '检查能不能画']],
   render: [['effects', 0.45, '渲染贴纸和手绘'], ['shots', 0.5, '渲染镜头'], ['mux', 0.05, '合成音乐']],
   preview: [['shots', 0.9, '生成预览'], ['mux', 0.1, '合成音乐']],
 }
@@ -69,6 +73,13 @@ export default function App() {
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
   const cancelRef = useRef(null)
+  const videoRef = useRef(null)
+  const [selected, setSelected] = useState(null)   // shot open in the inspector
+  const [time, setTime] = useState(0)              // playhead, seconds on the timeline
+  const [playing, setPlaying] = useState(false)
+  const [thumbs, setThumbs] = useState(null)
+  const [wave, setWave] = useState(null)
+  const [tab, setTab] = useState('shot')
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }))
 
   useEffect(() => {
@@ -121,15 +132,65 @@ export default function App() {
     ...f, stickerSel: f.stickerSel.includes(id) ? f.stickerSel.filter((x) => x !== id) : [...f.stickerSel, id],
   }))
 
-  // every new plan gets a quick preview right away; the full render is a separate click
-  const showPlan = async (p) => {
+  // every new plan gets a quick preview right away; the full render is a separate click.
+  // keep=true (an edit of the same plan): the old preview stays up until the new one is ready
+  const showPlan = async (p, keep = false) => {
     setPlan(p)
     setVideo(null)
-    setPreview(null)
+    if (!keep) setPreview(null)
     setPreview(await runJob({ kind: 'render', plan: p.plan, preview: true }))
   }
 
+  const q = (s) => encodeURIComponent(s)
+  useEffect(() => {
+    if (!plan) return
+    setThumbs(null)
+    vc.api('GET', `/api/thumbs?plan=${q(plan.plan)}`).then((r) => setThumbs(r.thumbs)).catch(() => {})
+    vc.api('GET', `/api/waveform?plan=${q(plan.plan)}`).then(setWave).catch(() => {})
+  }, [plan?.plan])
+
+  // playhead <-> video: scrubbing seeks the video; while playing the playhead follows it every frame
+  const seek = (t) => {
+    setTime(t)
+    const v = videoRef.current
+    if (v && Math.abs(v.currentTime - t) > 0.02) v.currentTime = t
+  }
+  useEffect(() => {
+    if (!playing) return
+    let id
+    const tick = () => { if (videoRef.current) setTime(videoRef.current.currentTime); id = requestAnimationFrame(tick) }
+    id = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(id)
+  }, [playing])
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.code !== 'Space' || ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(e.target.tagName)) return
+      const v = videoRef.current
+      if (!v) return
+      e.preventDefault()
+      v.paused ? v.play() : v.pause()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  const selectShot = (i) => {
+    setSelected(i)
+    setTab('shot')
+    const s = plan.shots[i]
+    if (time < s.t_start || time >= s.t_end) seek(s.t_start + 0.01)
+  }
+
+  const applyShot = (index, change) => guard(async () => {
+    const r = await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, ...change })
+    if (r.notes?.length) setNotice(r.notes.join('；'))
+    if (index >= r.shots.length) setSelected(null)
+    await showPlan(r, true)
+  })()
+  const checkShot = (index, box) => runJob({ kind: 'check', plan: plan.plan, index, box })
+  const getStill = (index, t) => vc.api('GET', `/api/still?plan=${q(plan.plan)}&index=${index}&t=${t}`)
+
   const makePlan = guard(async () => {
+    setSelected(null)
     setPlan(null)
     setVideo(null)
     setPreview(null)
@@ -144,6 +205,8 @@ export default function App() {
   })
 
   const rerollPlan = guard(async () => {
+    if (plan?.manual && !window.confirm('换一版会重新排所有镜头，手动加的贴纸和手绘都会丢掉。确定吗？')) return
+    setSelected(null)
     setPlanLooks(looksKey)
     await showPlan(await runJob({ kind: 'plan', analysis: analysis.analysis, ...lookParams() }))
   })
@@ -154,13 +217,15 @@ export default function App() {
     const a = await runJob({ kind: 'music', analysis: analysis.analysis, music, duration: Number(form.duration) })
     setAnalysis(a)
     set('music')(music)
-    setNotice(`已换成 ${a.music.name}（${a.music.tempo} BPM），镜头按新节拍重新排了`)
     setPlanLooks(looksKey)
-    await showPlan(await runJob({ kind: 'plan', analysis: a.analysis, ...lookParams() }))
+    const p = await runJob({ kind: 'plan', analysis: a.analysis, ...lookParams(), carry_from: plan.plan })
+    setNotice([`已换成 ${a.music.name}（${a.music.tempo} BPM），镜头按新节拍重新排了`, ...(p.notes || [])].join('；'))
+    setSelected(null)
+    await showPlan(p)
   })
 
   const swapShot = (index, clip) => guard(async () => {
-    await showPlan(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip }))
+    await showPlan(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip }), true)
   })()
 
   const render = guard(async () => {
@@ -299,71 +364,73 @@ export default function App() {
         )}
 
         {plan && (
-          <div className="result">
-            <div className="plan">
-              <div className="plan-head">
-                <h2>剪辑方案 <small>{plan.shots.length} 个镜头 · {plan.duration}s · {plan.aspect} · 方案 #{plan.seed}</small></h2>
-                <div className="actions">
-                  <button disabled={busy} onClick={rerollPlan} title="同样的素材和音乐，换一种剪法">换一版</button>
-                  <button disabled={busy} onClick={changeMusic} title="换一首歌，按新节拍重新排镜头（不用重新分析视频）">换歌…</button>
-                  <button className="primary" disabled={busy || !!video} onClick={render}>{video ? '已渲染' : '渲染成片'}</button>
-                </div>
-              </div>
-              <div className="timeline">
-                {plan.shots.map((s, i) => (
-                  <i key={i} title={`${ROLES[s.role]?.[0] || s.role} · ${s.clip}`}
-                     style={{ flexGrow: s.t_end - s.t_start, background: ROLES[s.role]?.[1] }} />
-                ))}
-              </div>
-              <div className="legend">
-                {Object.entries(ROLES).filter(([r]) => plan.shots.some((s) => s.role === r)).map(([r, [n, c]]) => (
-                  <span key={r}><i style={{ background: c }} />{n}</span>
-                ))}
-              </div>
-              <div className="table-wrap">
-              <table>
-                <thead><tr><th>时间</th><th>类型</th><th>素材</th><th>从第几秒</th><th>特效</th><th>换镜头</th></tr></thead>
-                <tbody>
-                  {plan.shots.map((s, i) => (
-                    <tr key={i}>
-                      <td>{s.t_start.toFixed(2)}–{s.t_end.toFixed(2)}</td>
-                      <td><i className="chip" style={{ background: ROLES[s.role]?.[1] }} />{ROLES[s.role]?.[0] || s.role}</td>
-                      <td>{s.clip}</td>
-                      <td>{s.src_start.toFixed(2)}s</td>
-                      <td>{s.sticker ? stickerLabel(s.sticker, looks) : s.drawn ? `手绘 ${s.drawn.label}` : ''}</td>
-                      <td><div className="swap">
-                        <button className="mini" disabled={busy} onClick={() => swapShot(i)} title="自动换一段合适的素材">换一个</button>
-                        <select disabled={busy} value="" onChange={(e) => e.target.value && swapShot(i, e.target.value)}
-                                title="换成指定的素材">
-                          <option value="">指定…</option>
-                          {usableClips.map((c) => <option key={c.path} value={c.path}>{c.name}</option>)}
-                        </select>
-                      </div></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="editor">
+            <div className="toolbar">
+              <h2>剪辑方案 <small>{plan.shots.length} 个镜头 · {plan.duration}s · {plan.aspect} · 方案 #{plan.seed}</small></h2>
+              <div className="actions">
+                <button disabled={busy} onClick={rerollPlan} title="同样的素材和音乐，换一种剪法">换一版</button>
+                <button disabled={busy} onClick={changeMusic} title="换一首歌，按新节拍重新排镜头（手动加的贴纸和手绘会尽量保留）">换歌…</button>
+                <button className="primary" disabled={busy || !!video} onClick={render}>{video ? '已渲染' : '渲染成片'}</button>
+                {video && <button className="primary" onClick={exportVideo}>导出…</button>}
+                {video && <button onClick={() => vc.showInFolder(video.video)}>打开所在文件夹</button>}
               </div>
             </div>
 
-            <div className="right">
-            <div className="preview" style={{ aspectRatio: `${aw} / ${ah}`, '--ar': aw / ah }}>
-              {shown ? (
-                <video key={shown.video} src={mediaUrl(shown.video)} controls autoPlay />
-              ) : (
-                <div className="ph">{busy ? (job?.preview ? '正在生成预览…' : job?.kind === 'render' ? '渲染中…' : '处理中…') : '预览会显示在这里'}</div>
-              )}
-              {shown && !video && <span className="badge">预览 · 低清，不含贴纸和手绘</span>}
-            </div>
-            {video && (
-              <div className="video-actions">
-                <span>{fileName(video.video)} · {video.duration}s</span>
-                <button className="primary" onClick={exportVideo}>导出…</button>
-                <button onClick={() => vc.showInFolder(video.video)}>打开所在文件夹</button>
+            <div className="stage">
+              <div className="viewer">
+                <div className="preview" style={{ aspectRatio: `${aw} / ${ah}`, '--ar': aw / ah }}>
+                  {shown ? (
+                    <video key={shown.video} ref={videoRef} src={mediaUrl(shown.video)} controls
+                           onSeeked={(e) => !playing && setTime(e.currentTarget.currentTime)}
+                           onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
+                           onLoadedMetadata={(e) => { e.currentTarget.currentTime = Math.min(time, plan.duration - 0.05) }} />
+                  ) : (
+                    <div className="ph">{busy ? (job?.preview ? '正在生成预览…' : job?.kind === 'render' ? '渲染中…' : '处理中…') : '预览会显示在这里'}</div>
+                  )}
+                  {shown && !video && <span className="badge">预览 · 低清{plan.manual ? '，手动加的效果已包含' : '，自动贴纸 / 手绘在成片里才有'}</span>}
+                </div>
+                <p className="viewer-note">{video ? `${fileName(video.video)} · ${video.duration}s` : '满意的话点「渲染成片」出高清版，带全部贴纸和手绘。'}</p>
               </div>
-            )}
-            {!video && preview && <div className="video-actions"><span>满意的话点「渲染成片」出高清版，带贴纸和手绘。</span></div>}
+
+              <div className="side-pane">
+                <div className="tabs">
+                  <button className={tab === 'shot' ? 'on' : ''} onClick={() => setTab('shot')}>镜头</button>
+                  <button className={tab === 'list' ? 'on' : ''} onClick={() => setTab('list')}>列表</button>
+                </div>
+                {tab === 'shot' && (selected != null && plan.shots[selected] ? (
+                  <Inspector plan={plan} index={selected} looks={looks} usableClips={usableClips} time={time} busy={busy}
+                             onSwap={swapShot} onApply={applyShot} onCheck={checkShot} getStill={getStill}
+                             stickerName={(x) => stickerLabel(x, looks)} onClose={() => setSelected(null)} />
+                ) : (
+                  <div className="empty-pane">
+                    <p>在下面的时间线上点一个镜头，就能在这里：</p>
+                    <ul><li>换素材</li><li>在画面上点一下放贴纸（跟着走 / 固定）</li><li>把这个镜头改成手绘</li></ul>
+                  </div>
+                ))}
+                {tab === 'list' && (
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr><th>#</th><th>时间</th><th>类型</th><th>素材</th><th>特效</th></tr></thead>
+                      <tbody>
+                        {plan.shots.map((s, i) => (
+                          <tr key={i} className={selected === i ? 'sel' : ''} onClick={() => selectShot(i)}>
+                            <td>{i + 1}</td>
+                            <td>{s.t_start.toFixed(2)}–{s.t_end.toFixed(2)}</td>
+                            <td><i className="chip" style={{ background: ROLES[s.role]?.[1] }} />{ROLES[s.role]?.[0] || s.role}</td>
+                            <td>{s.clip}</td>
+                            <td>{s.sticker ? stickerLabel(s.sticker, looks) : s.drawn ? `手绘 ${s.drawn.label}` : ''}{(s.sticker_at || s.drawn?.manual) ? ' ✎' : ''}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
+
+            <Timeline plan={plan} thumbs={thumbs} wave={wave} time={time} onSeek={seek} selected={selected}
+                      onSelect={selectShot} stickerName={(x) => stickerLabel(x, looks)}
+                      styleName={(id) => looks.drawn_styles.find((d) => d.id === (id || 'lineart'))?.name || '线稿上色'} />
           </div>
         )}
       </main>

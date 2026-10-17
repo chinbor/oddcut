@@ -138,3 +138,77 @@ button.mini { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
 .style-card b { font-size: 13px; font-weight: 600; }
 .style-card small { color: var(--muted); font-size: 11px; line-height: 1.35; }
 .style-card.on { border-color: var(--accent); }
+
+/* ---------------------------------------------------------------- editor: preview + inspector + timeline */
+.editor { display: flex; flex-direction: column; gap: 12px; flex: 1 0 auto; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.toolbar h2 { margin: 0; font-size: 16px; }
+.toolbar small { color: var(--muted); font-weight: 400; margin-left: 6px; font-size: 13px; }
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) clamp(280px, 34cqi, 380px); gap: 14px; align-items: start; }
+.viewer { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+.viewer .preview { --max-h: calc(100vh - 430px); max-width: 100%; }
+.viewer-note { margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
+.side-pane { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; min-width: 0;
+  max-height: calc(100vh - 330px); overflow-y: auto; }
+.tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.tabs button { padding: 4px 12px; font-size: 13px; border-radius: 6px; }
+.tabs button.on { border-color: var(--accent); color: var(--accent-2); }
+.empty-pane { color: var(--muted); font-size: 13px; }
+.empty-pane ul { margin: 6px 0 0; padding-left: 18px; }
+.side-pane tr { cursor: pointer; }
+.side-pane tr.sel td { background: #2b2420; }
+.side-pane td:nth-child(4) { max-width: 110px; }
+
+.inspector { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.insp-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.insp-head span { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insp-frame { position: relative; width: 100%; max-height: 300px; background: #000; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--line); touch-action: none; user-select: none; margin-inline: auto; }
+.insp-frame[data-mode=place] { cursor: crosshair; }
+.insp-frame[data-mode=box] { cursor: cell; }
+.insp-frame > img:first-child { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
+.sticker-ghost { position: absolute; transform: translate(-50%, -50%); pointer-events: none; filter: drop-shadow(0 0 2px #000); }
+.subject-box { position: absolute; border: 2px dashed var(--accent); border-radius: 4px; pointer-events: none; }
+.frame-time { position: absolute; right: 6px; bottom: 6px; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.6); }
+.inspector .hint { margin: -4px 0 0; color: var(--muted); font-size: 12px; }
+.inspector section { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+.inspector h4 { margin: 0; font-size: 13px; }
+.inspector h4 small { color: var(--muted); font-weight: 400; margin-left: 4px; }
+.inspector select { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+.inspector .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.inspector .actions button { padding: 5px 12px; }
+.check { margin: 0; padding: 6px 8px; border-radius: 6px; font-size: 12px; }
+.check.ok { background: #1f3a31; color: #a8f0d6; }
+.check.warn { background: #3d2f1c; color: #ffd8a1; }
+
+.timeline-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 0 6px; min-width: 0; }
+.tl-head { display: flex; align-items: center; gap: 10px; padding: 0 12px 6px; font-size: 13px; }
+.tl-head small { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-scroll { overflow-x: auto; overflow-y: hidden; }
+.tl-inner { position: relative; padding-bottom: 4px; }
+.tl-ruler { position: relative; height: 18px; border-bottom: 1px solid var(--line); cursor: ew-resize; margin-left: 0; }
+.tl-ruler .tick { position: absolute; top: 0; height: 18px; border-left: 1px solid #3a3f4c; font-size: 10px; color: var(--muted); padding-left: 3px; }
+.tl-track { position: relative; height: 26px; border-bottom: 1px solid #22252d; }
+.tl-track:first-of-type { height: 46px; }
+.tl-track.music { height: 48px; }
+.tl-track > label { position: sticky; left: 0; z-index: 3; display: inline-flex; align-items: center; height: 100%; width: 52px;
+  padding-left: 10px; font-size: 11px; color: var(--muted); background: var(--panel); }
+.blk { position: absolute; top: 3px; bottom: 3px; border-radius: 5px; cursor: pointer; overflow: hidden; }
+.blk.video { background: #2a2e38 center / cover no-repeat; border-top: 4px solid; }
+.blk.video .num { position: absolute; left: 3px; bottom: 2px; font-size: 10px; padding: 0 4px; border-radius: 3px; background: rgba(0,0,0,.65); }
+.blk.sel { outline: 2px solid var(--accent); outline-offset: 0; z-index: 2; }
+.blk.bar { display: flex; align-items: center; padding: 0 6px; font-size: 11px; white-space: nowrap; color: #1a1310; }
+.blk.bar span { overflow: hidden; text-overflow: ellipsis; position: relative; z-index: 1; }
+.blk.sticker { background: #d9b24f; }
+.blk.drawn { background: #e58d5f; }
+.blk.manual { box-shadow: inset 0 0 0 2px rgba(255,255,255,.55); }
+.blk .key { position: absolute; top: 50%; width: 8px; height: 8px; margin-top: -4px; background: #fff; border: 1px solid #1a1310; transform: rotate(45deg); }
+.blk .reveal { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; }
+.playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #ff5a3c; z-index: 4; cursor: ew-resize; }
+.playhead::before { content: ''; position: absolute; top: 0; left: -5px; border: 6px solid transparent; border-top-color: #ff5a3c; }
+
+@container (max-width: 760px) {
+  .stage { grid-template-columns: 1fr; }
+  .viewer .preview { --max-h: 40vh; }
+  .side-pane { max-height: none; }
+}

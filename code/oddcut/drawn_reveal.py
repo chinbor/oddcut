@@ -249,15 +249,46 @@ def _carve_holes(frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return out
 
 
-def find_subject(frame: np.ndarray) -> tuple[Subject | None, str]:
-    """Main subject of a (3:4 cropped) frame, with face parts for animals."""
+def _grabcut(frame: np.ndarray, rect) -> np.ndarray | None:
+    """Foreground mask inside a user-drawn box (for things the detector doesn't know)."""
+    H, W = frame.shape[:2]
+    x0, y0, x1, y1 = rect
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    m = np.zeros((H, W), np.uint8)
+    bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
+    cv2.grabCut(np.ascontiguousarray(frame[..., ::-1]), m, (x0, y0, x1 - x0, y1 - y0), bgd, fgd, 5,
+                cv2.GC_INIT_WITH_RECT)
+    fg = (m == cv2.GC_FGD) | (m == cv2.GC_PR_FGD)
+    if fg.sum() < 0.01 * H * W:
+        return None
+    return _clean_mask(fg)
+
+
+def find_subject(frame: np.ndarray, box=None) -> tuple[Subject | None, str]:
+    """Main subject of a (cropped) frame, with face parts for animals. `box` (x0, y0, x1, y1, 0..1 of the
+    frame): the user picked the subject; the detection mostly inside it wins, else GrabCut inside it."""
     segs = _segment(frame)
+    if box is not None:
+        H, W = frame.shape[:2]
+        x0, y0, x1, y1 = (np.clip(np.asarray(box, float), 0, 1) * [W, H, W, H]).round().astype(int)
+        inbox = np.zeros((H, W), bool)
+        inbox[y0:y1, x0:x1] = True
+        inside = [d for d in segs if (d[3] & inbox).sum() >= 0.6 * max(1, d[3].sum())]
+        if inside:
+            segs = [max(inside, key=lambda d: d[3].sum())]
+        else:
+            fg = _grabcut(frame, (x0, y0, x1, y1))
+            if fg is None:
+                return None, "nothing to draw inside the box"
+            ys, xs = np.nonzero(fg)
+            segs = [("thing", 1.0, np.array([xs.min(), ys.min(), xs.max(), ys.max()], np.float32), fg)]
     if not segs:
         return None, "no subject (no animal / front object detected)"
     label, conf, box, mask = segs[0]
     family = "animal" if label in ANIMALS else "object"
     det = _clean_mask(mask)
-    mask = _carve_holes(frame, det) if family == "object" else det
+    mask = _carve_holes(frame, det) if family == "object" and label != "thing" else det
     s = Subject(label, family, conf, box, mask, mask.copy(), det,
                 others=[(l, float(m.sum())) for l, _, _, m in segs[1:]])
     if family == "animal":
@@ -1149,6 +1180,45 @@ def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, tim
         yield frames_out[i]
 
 
+# ----------------------------------------------------------------------------- manual pick (desktop app)
+
+_ZH = [("nothing to draw inside the box", "框里没找到能画的东西，框大一点或换个位置试试"),
+       ("no subject", "画面里没找到明显的主体（动物或物体），可以在画面上拖一个框把要画的东西圈出来"),
+       ("unsure what the subject is", "认不太准主体是什么，画出来可能不像"),
+       ("multiple subjects", "画面里有几个差不多大的东西，可以拖框选要画的那个"),
+       ("head found", "没找到动物的头"),
+       ("face not frontal", "动物的脸不是正面，画出来可能不像"),
+       ("head cut off", "头被画面边缘切掉了"),
+       ("cut off by the frame", "主体有一部分在画面外"),
+       ("subject covers", "主体在画面里太大或太小"),
+       ("start frame soft", "这个镜头开头画面有点糊，线条会不准"),
+       ("subject moves", "主体一开始动得太快，画完接实拍会对不上"),
+       ("single", "可以画")]
+
+
+def reason_zh(reason: str) -> str:
+    return next((zh for key, zh in _ZH if key in reason), reason)
+
+
+def check_shot(clip: str, start: float, aspect: float, box=None) -> dict:
+    """Can this shot be drawn? For the app's shot editor: ok, a Chinese reason, the subject's box (0..1)
+    and a picture of the shot with the subject tinted."""
+    native, _, fps, _ = load_shot(clip, start, 0.4, out_height=None, aspect=aspect)
+    s, why = find_subject(native[0], box)
+    if s is None:
+        return {"ok": False, "found": False, "reason": reason_zh(why), "detail": why}
+    ok, reason, info = is_drawable(native, fps, s)
+    H, W = s.region.shape
+    ys, xs = np.nonzero(s.region)
+    over = native[0].astype(np.float32)
+    over[s.region] = 0.55 * over[s.region] + 0.45 * np.array([255, 122, 89])
+    img = Image.fromarray(np.clip(over, 0, 255).astype(np.uint8))
+    img.thumbnail((480, 480))
+    return {"ok": ok, "found": True, "reason": reason_zh(reason), "detail": reason, "label": s.label,
+            "box": [round(float(xs.min()) / W, 4), round(float(ys.min()) / H, 4),
+                    round(float(xs.max()) / W, 4), round(float(ys.max()) / H, 4)], "image": img}
+
+
 # ----------------------------------------------------------------------------- style picker thumbnails
 
 def _preview_scene(n: int = 360) -> tuple[np.ndarray, Subject]:
@@ -1236,16 +1306,18 @@ def debug_sheet(native: np.ndarray, s: Subject, strokes, regions, scale: float, 
 
 def run(clip: str, start: float, out: Path, timing: Timing | None = None, check: bool = True,
         seed: int = 0, out_height: int | None = OUT_HEIGHT, k: int = 4, background: str = "real",
-        aspect: float = ASPECT, style: str = "lineart") -> dict:
+        aspect: float = ASPECT, style: str = "lineart", box=None) -> dict:
+    """`box`: the user picked the subject (see find_subject). check=False draws it even if is_drawable
+    says no (the user insisted); without any subject there is nothing to draw either way."""
     from .looks import check_drawn_style
     style = check_drawn_style(style)
     timing = timing or Timing()
     tm = timing.resolve()
     native, frames_out, fps, scale = load_shot(clip, start, max(tm.tail, 0.4) + 0.1, out_height, aspect)
-    s, why = find_subject(native[0])
+    s, why = find_subject(native[0], box)
     ok, reason, info = is_drawable(native, fps, s) if s is not None else (False, why, {})
     stats = {"clip": clip, "start": start, "drawable": ok, "reason": reason, **info}
-    if not ok and check:
+    if s is None or (not ok and check):
         return stats
     strokes = build_strokes(native[0], s, scale, seed)
     regions, palette = build_fills(frames_out[0], s, scale, k=k, seed=seed)
