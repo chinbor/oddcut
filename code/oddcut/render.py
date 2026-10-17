@@ -104,54 +104,9 @@ def _render_shot(i: int, shot: Shot, src: tuple[str, float], out_dir: Path, w: i
     return _keep(out, cached)
 
 
-def _overlay_pass(video: Path, overlays: list[dict], w: int, h: int, fps: float, grade: str, preview: bool,
-                  work_dir: Path, frames: int) -> Path:
-    """Lay the picture-in-picture clips over the joined edit (lower track first, so higher ones end up on
-    top): each is cut from its clip, filled into its box, given rounded corners / opacity (an alpha mask)
-    and an optional white border, and shown from t_start to t_end."""
-    from PIL import Image, ImageDraw
-    args = ["ffmpeg", "-y", "-v", "error", "-i", str(video)]
-    chains, last, n_in = [], "[0:v]", 1
-    for k, o in enumerate(sorted(overlays, key=lambda o: (o["track"], o["t_start"]))):
-        bw, bh = max(2, round(o["w"] * w / 2) * 2), max(2, round(o["h"] * h / 2) * 2)
-        x, y = round(o["x"] * w), round(o["y"] * h)
-        t0, t1 = float(o["t_start"]), float(o["t_end"])
-        dur = t1 - t0
-        r = int(float(o.get("radius", 0)) * min(bw, bh))
-        alpha = int(255 * float(o.get("opacity", 1.0)))
-        mask = Image.new("L", (bw, bh), 0)
-        ImageDraw.Draw(mask).rounded_rectangle([0, 0, bw - 1, bh - 1], radius=r, fill=alpha)
-        mask_png = work_dir / f"ov_mask_{k}.png"
-        mask.save(mask_png)
-        args += ["-ss", f"{float(o['src_start']):.3f}", "-t", f"{dur + 0.2:.3f}", "-i", o["clip"],
-                 "-framerate", str(fps), "-loop", "1", "-t", f"{dur + 0.2:.3f}", "-i", str(mask_png)]
-        vi, mi = n_in, n_in + 1
-        n_in += 2
-        on = f"enable='between(t,{t0:.3f},{t1:.3f})'"
-        chains.append(
-            f"[{vi}:v]fps={fps},setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
-            f"scale={bw}:{bh}:force_original_aspect_ratio=increase:flags={'bilinear' if preview else 'lanczos'},"
-            f"crop={bw}:{bh},setsar=1{',' + grade if grade else ''},format=yuva420p[c{k}];"
-            f"[{mi}:v]format=gray[m{k}];[c{k}][m{k}]alphamerge,setpts=PTS-STARTPTS+{t0:.3f}/TB[o{k}];"
-            f"{last}[o{k}]overlay={x}:{y}:eof_action=pass:{on}[b{k}]")
-        last = f"[b{k}]"
-        if o.get("border"):
-            bd = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
-            ImageDraw.Draw(bd).rounded_rectangle([0, 0, bw - 1, bh - 1], radius=r, outline=(255, 255, 255, alpha),
-                                                 width=max(2, round(min(w, h) * 0.006)))
-            bd_png = work_dir / f"ov_border_{k}.png"
-            bd.save(bd_png)
-            args += ["-framerate", str(fps), "-loop", "1", "-t", f"{dur + 0.2:.3f}", "-i", str(bd_png)]
-            chains.append(f"[{n_in}:v]format=rgba,setpts=PTS-STARTPTS+{t0:.3f}/TB[d{k}];"
-                          f"{last}[d{k}]overlay={x}:{y}:eof_action=pass:{on}[e{k}]")
-            n_in += 1
-            last = f"[e{k}]"
-    out = work_dir / "video_overlays.mp4"
-    run(args + ["-filter_complex", ";".join(chains), "-map", last, "-frames:v", str(frames), "-an",
-                "-c:v", "libx264", "-preset", "ultrafast" if preview else "veryfast", "-crf", "28" if preview else "18",
-                "-pix_fmt", "yuv420p", "-color_range", "tv", "-color_primaries", "bt709", "-color_trc", "bt709",
-                "-colorspace", "bt709", "-r", str(fps), str(out)])
-    return out
+def _beat(music) -> float:
+    """Seconds per beat of the song under the edit."""
+    return float(getattr(music, "beat_period", 0) or 0) or 60.0 / float(getattr(music, "tempo", 120) or 120)
 
 
 def _encode_args(fps: float, preview: bool) -> list[str]:
@@ -168,7 +123,7 @@ def _grow_parts(shots: list[Shot], parts: list, sources: list, music, work_dir: 
     if not todo:
         return
     from .growth import render_grow, timing
-    beat = float(getattr(music, "beat_period", 0) or 0) or 60.0 / float(getattr(music, "tempo", 120) or 120)
+    beat = _beat(music)
     report("render", "grow", 0, len(todo))
 
     def one(i: int):
@@ -355,9 +310,10 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
     run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(concat_list),
          "-c", "copy", str(video_only)])
 
-    if overlays:
-        video_only = _overlay_pass(video_only, overlays, w, h, fps, grade, preview, work_dir,
-                                   sum(s.frames for s in shots))
+    if overlays:                       # picture-in-picture (pip.py), drawn over the joined shots
+        from .pip import render_overlays
+        video_only = render_overlays(video_only, overlays, work_dir / "video_overlays.mp4", w, h, fps,
+                                     sum(s.frames for s in shots), grade, preview, _beat(music), _encode_args(fps, preview))
 
     report("render", "mux", 0, 1)
     total = sum(s.frames for s in shots) / fps
