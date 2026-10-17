@@ -98,9 +98,21 @@ def _path(p: str | None) -> Path | None:
 
 
 def _work_dir(params: dict) -> Path:
-    work = _path(params.get("work")) or APP_DIR / time.strftime("%Y%m%d_%H%M%S")
-    work.mkdir(parents=True, exist_ok=True)
-    return work
+    """The given work dir, or a new output/app/<time>[_n] folder (a cached analyze takes well under a second,
+    so two can start in the same second; they must not share a folder)."""
+    work = _path(params.get("work"))
+    if work:
+        work.mkdir(parents=True, exist_ok=True)
+        return work
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    base, n = time.strftime("%Y%m%d_%H%M%S"), 1
+    while True:
+        work = APP_DIR / (base if n == 1 else f"{base}_{n}")
+        try:
+            work.mkdir()
+            return work
+        except FileExistsError:
+            n += 1
 
 
 def _template_path(t: str | None) -> Path:
