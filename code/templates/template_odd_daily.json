@@ -1,0 +1,193 @@
+{
+  "id": "odd_daily_v1",
+  "name": "odd 日常碎片",
+  "description": "手机随手拍的生活碎片，卡点快切 + 物体拟人涂鸦 + 首尾呼应。基于 5 条参考视频归纳。",
+  "type": "rule_based",
+
+  "output": {
+    "aspect": "3:4",
+    "resolution": [1080, 1440],
+    "fps": 30,
+    "duration": { "min": 15, "max": 24, "target": 18 }
+  },
+
+  "music": {
+    "source": "user_or_library",
+    "bpm_range": [75, 175],
+    "cut_grid": "beat_or_half_beat",
+    "half_beat_below_bpm": 100,
+    "tolerance_ms": 80,
+    "ending": "fade_out_last_beat"
+  },
+
+  "structure": [
+    {
+      "section": "hook",
+      "shots": 1,
+      "seconds": [1.2, 2.4],
+      "material": { "prefer": ["wide_scene", "sky", "landmark", "object_closeup"], "role": "loop_anchor" },
+      "overlay": { "type": "system_ui", "pick_one": ["now_playing_card", "incoming_call", "control_center"], "enter_at": 0.3 }
+    },
+    {
+      "section": "body",
+      "shots": { "min": 15, "max": 28 },
+      "shot_seconds": { "min": 0.5, "max": 1.5, "median": 0.8 },
+      "sticker_shot": { "every_n_shots": [2, 4], "seconds": [1.2, 2.0] },
+      "breathing_shot": { "every_n_shots": [6, 9], "seconds": [1.6, 3.0], "prefer": ["light_and_shadow", "silhouette", "sunset"] },
+      "material": {
+        "prefer": ["hand_holding_object", "pet_or_animal", "food_drink", "street", "light_and_shadow", "shop_detail"],
+        "avoid": ["shaky", "blurry", "talking_head", "too_dark"],
+        "diversity": "no_two_adjacent_same_scene"
+      },
+      "ordering": {
+        "strategy": "match_cut_chain",
+        "signals": ["subject_position", "dominant_color", "shape_similarity", "motion_direction"],
+        "optional_color_thread": true
+      }
+    },
+    {
+      "section": "outro",
+      "shots": 1,
+      "seconds": [1.8, 3.2],
+      "fade_out": 0.6,
+      "material": { "role": "loop_anchor_reverse", "fallback": ["sunset", "sky", "window_view"] },
+      "transition_out": "fade_to_black"
+    }
+  ],
+
+  "drawn_opening": {
+    "enabled": true,
+    "note": "opening shot: the subject is hand-drawn (line -> colour, ~1.1s), then dissolves into the real footage on a strong beat",
+    "reveal_window": [1.0, 1.7],
+    "reveal_seconds": 0.4,
+    "tail": [0.5, 1.1],
+    "prefer_family": "animal",
+    "loop_outro": false,
+    "background": "real"
+  },
+
+  "drawn_mid": {
+    "enabled": true,
+    "note": "one more drawn shot mid-edit (takes the first breath slot after after_seconds), objects first: e.g. the coffee cup",
+    "prefer_family": "object",
+    "after_seconds": 4.0,
+    "reveal_window": [1.0, 1.5],
+    "reveal_seconds": 0.4,
+    "tail": [0.5, 1.0]
+  },
+
+  "stickers": {
+    "enabled": true,
+    "density": { "per_video": [3, 4], "min_gap_shots": 2 },
+    "rules": [
+      { "when": "round_object_or_vehicle_front", "apply": "cartoon_eyes", "track": true, "variants": ["googly", "angry", "sleepy"] },
+      { "when": "animal_head", "apply": "doodle_symbol", "track": true, "variants": ["anger_mark", "question_mark", "exclaim_lines"] },
+      { "when": "ball_or_traffic_light", "apply": "emoji_replace", "track": true },
+      { "when": "hero_product_held_in_hand", "apply": "cutout_sticker", "style": ["white_stroke", "torn_paper_edge"], "freeze_frames": 6 },
+      { "when": "person_full_body", "apply": "neon_outline", "probability": 0.2 }
+    ]
+  },
+
+  "transitions": {
+    "default": "hard_cut",
+    "special": [
+      { "type": "foreground_wipe", "when": "foreground_occluder_detected", "probability": 0.8 },
+      { "type": "grid_puzzle_3x3", "max_per_video": 1 },
+      { "type": "torn_paper", "max_per_video": 1 },
+      { "type": "white_flash", "max_per_video": 1, "on": "strong_beat" }
+    ]
+  },
+
+  "text": {
+    "mode": "optional_lyrics",
+    "style": "word_by_word_pop",
+    "placement": "beside_tracked_object",
+    "font": "rounded_sans_white_shadow"
+  },
+
+  "grade": {
+    "lut": "odd_warm_contrast.cube",
+    "exposure": -0.05,
+    "contrast": 1.08,
+    "grain": 0.08
+  },
+
+  "shooting_guide": {
+    "title": "odd 日常碎片 · 拍摄清单",
+    "summary": "竖屏、主体居中、每段 3～8 秒稳住拍。一共拍 25～40 段，覆盖下面 5 类镜头，剪出来约 18 秒、16～20 个镜头。",
+    "total_clips": [25, 40],
+    "clip_seconds": [3, 8],
+
+    "camera_settings": [
+      { "item": "画幅", "tip": "竖屏拍，主体放在画面中间 3/4 的区域内", "why": "成片是 3:4，会裁掉 9:16 画面的上下各约 1/8" },
+      { "item": "分辨率 / 帧率", "tip": "1080p 或 4K，30fps 或 60fps；不要用 24fps", "why": "60fps 能做慢动作，24fps 在快切里显得卡" },
+      { "item": "曝光", "tip": "长按屏幕锁定曝光和对焦，曝光调到 -0.3 到 -0.7", "why": "风格偏暗调，暗部好调，过曝的天空救不回来" },
+      { "item": "滤镜", "tip": "关掉美颜、滤镜和画面上的水印文字", "why": "调色统一交给后期" },
+      { "item": "变焦", "tip": "不要用数码变焦，想拍近就走过去或切长焦镜头", "why": "数码变焦再加上 3:4 裁切，画质会明显变差" },
+      { "item": "镜头", "tip": "拍之前擦干净镜头", "why": "逆光镜头多，指纹会让画面发雾" }
+    ],
+
+    "shot_list": [
+      {
+        "id": "anchor", "label": "锚点镜头", "count": [1, 2], "seconds": [8, 15], "used_for": "开头 + 结尾（首尾呼应）",
+        "examples": ["天空", "地标", "落叶", "一条有特点的街道"],
+        "tips": ["同一个场景连续拍 8 秒以上，后期拆成前后两段", "也可以拍同一个物体的两种状态：地上的落叶 → 手里捏着的落叶"]
+      },
+      {
+        "id": "hand_holding_object", "label": "手入镜", "share": 0.3, "count": [8, 12], "seconds": [3, 6], "used_for": "主体快切，风格最核心的镜头",
+        "examples": ["手拿咖啡/奶茶", "捏一片叶子", "拿周边/票根", "翻书", "手摸宠物"],
+        "tips": ["物体每次都放在画面同一个位置（比如正中间），方便做匹配剪辑", "如果有品牌产品，多角度拍 3 段以上，方便做抠图贴纸"]
+      },
+      {
+        "id": "pet_or_animal", "label": "动物", "share": 0.15, "count": [4, 6], "seconds": [3, 8], "used_for": "加 💢 / 问号涂鸦的主要载体",
+        "examples": ["猫狗走过", "回头", "趴着", "街头的流浪猫"],
+        "tips": ["在动物头顶上方留出一些空间，方便放涂鸦", "动作发生时稳住 2 秒以上，贴纸跟踪才稳"]
+      },
+      {
+        "id": "light_and_shadow", "label": "光影", "share": 0.15, "count": [4, 6], "seconds": [4, 8], "used_for": "2～3 秒的呼吸镜头，给快节奏留出停顿",
+        "examples": ["逆光树叶", "墙上树影", "夕阳", "剪影", "车窗/后视镜里的夕阳"],
+        "tips": ["可以暗，但要有明确的光源", "尽量固定机位，让光影自己动"]
+      },
+      {
+        "id": "street_and_shop", "label": "街景和店铺", "share": 0.3, "count": [8, 12], "seconds": [3, 6], "used_for": "交代地点、填充节奏",
+        "examples": ["店招", "小巷", "路人", "城市地标", "店铺细节"],
+        "tips": ["一个场景拍远景、近景、细节几个角度", "有行人或柱子从镜头前经过时别停，这是天然的遮挡转场"]
+      }
+    ],
+
+    "techniques": [
+      {
+        "name": "给拟人化留素材",
+        "tips": ["多拍正面朝向镜头的圆形物体：水果、杯子、球、路灯、车头、树冠（后期贴眼睛）", "拍动物时头顶留空间（后期放 💢 / 问号）", "主体稳定 2 秒以上"]
+      },
+      {
+        "name": "为匹配剪辑做准备",
+        "tips": ["手拿的东西每次都放在画面同一个位置", "选一个颜色贯穿整条视频（比如全片都是红色物体）", "运动方向保持一致，比如都从左往右"]
+      },
+      {
+        "name": "为遮挡转场做准备",
+        "tips": ["等行人、柱子、树干把画面完全挡住再离开，不要提前停"]
+      },
+      {
+        "name": "首尾呼应",
+        "tips": ["锚点镜头拍 8 秒以上", "开头和结尾可以是同一个物体的不同状态，循环播放时能接上"]
+      }
+    ],
+
+    "for_auto_edit": [
+      "每段 3～8 秒，开始和结束各多拍 1 秒（会自动跳过首尾晃动，再在中间挑最好的 0.6～1.5 秒）",
+      "拍 25～40 段；素材太少时会重复使用同一段",
+      "稳住别甩，手抖的镜头会被自动过滤；走路拍时开防抖，或把手肘夹紧身体",
+      "可以暗但别全黑，夜景要有招牌、路灯、窗光这类光源",
+      "录到的现场声不影响，后期会换成音乐"
+    ],
+
+    "pitfalls": [
+      { "problem": "横屏拍", "result": "裁成 3:4 后只剩中间一窄条，画质变软" },
+      { "problem": "主体贴着画面边缘", "result": "裁切后主体被切掉" },
+      { "problem": "每段只拍 1 秒", "result": "没有余量挑选，切点不好卡" },
+      { "problem": "全是同一类镜头", "result": "节奏单调，颜色链也串不起来" },
+      { "problem": "自动曝光，在明暗之间来回跳", "result": "画面忽明忽暗，调色也压不住" }
+    ]
+  }
+}

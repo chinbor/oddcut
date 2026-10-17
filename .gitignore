@@ -1,0 +1,54 @@
+# --- environments / build output ---
+.venv/
+**/__pycache__/
+*.pyc
+*.egg-info/
+desktop/node_modules/
+desktop/dist/
+
+# --- generated ---
+output/
+code/_backup/
+oddcut_v0.2/
+*.log
+
+# --- model weights and caches (downloaded or generated at runtime) ---
+assets/models/
+*.pt
+*.pth
+*.onnx
+*.engine
+*.safetensors
+*.torchscript
+
+# --- media: example footage / music are not in the repo (see README) ---
+assets/public/clips/
+assets/public/music/
+assets/test/
+assets/reference/
+*.mp4
+*.mov
+*.m4v
+*.avi
+*.mkv
+*.webm
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.ogg
+
+# --- local experiments and diagnostics (not part of the product) ---
+_vision_test/
+rc_diag*
+
+# --- secrets ---
+.env
+*.env
+.env.*
+
+# --- OS junk ---
+Thumbs.db
+desktop.ini
+.DS_Store

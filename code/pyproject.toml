@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oddcut"
+version = "0.3.0"
+description = "Template-driven auto editing in the odd style: beat-synced cuts, loop bookends, 3:4 grade, tracked stickers, drawn-reveal opening"
+requires-python = ">=3.11"
+dependencies = ["numpy", "scipy", "librosa", "soundfile"]
+
+[project.optional-dependencies]
+# stickers + drawn reveal; torch CPU wheels: pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+vision = ["ultralytics", "opencv-python", "pillow", "matplotlib"]
+
+[tool.setuptools]
+packages = ["oddcut"]
