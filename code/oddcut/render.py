@@ -103,6 +103,56 @@ def _render_shot(i: int, shot: Shot, src: tuple[str, float], out_dir: Path, w: i
     return _keep(out, cached)
 
 
+def _overlay_pass(video: Path, overlays: list[dict], w: int, h: int, fps: float, grade: str, preview: bool,
+                  work_dir: Path, frames: int) -> Path:
+    """Lay the picture-in-picture clips over the joined edit (lower track first, so higher ones end up on
+    top): each is cut from its clip, filled into its box, given rounded corners / opacity (an alpha mask)
+    and an optional white border, and shown from t_start to t_end."""
+    from PIL import Image, ImageDraw
+    args = ["ffmpeg", "-y", "-v", "error", "-i", str(video)]
+    chains, last, n_in = [], "[0:v]", 1
+    for k, o in enumerate(sorted(overlays, key=lambda o: (o["track"], o["t_start"]))):
+        bw, bh = max(2, round(o["w"] * w / 2) * 2), max(2, round(o["h"] * h / 2) * 2)
+        x, y = round(o["x"] * w), round(o["y"] * h)
+        t0, t1 = float(o["t_start"]), float(o["t_end"])
+        dur = t1 - t0
+        r = int(float(o.get("radius", 0)) * min(bw, bh))
+        alpha = int(255 * float(o.get("opacity", 1.0)))
+        mask = Image.new("L", (bw, bh), 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, bw - 1, bh - 1], radius=r, fill=alpha)
+        mask_png = work_dir / f"ov_mask_{k}.png"
+        mask.save(mask_png)
+        args += ["-ss", f"{float(o['src_start']):.3f}", "-t", f"{dur + 0.2:.3f}", "-i", o["clip"],
+                 "-framerate", str(fps), "-loop", "1", "-t", f"{dur + 0.2:.3f}", "-i", str(mask_png)]
+        vi, mi = n_in, n_in + 1
+        n_in += 2
+        on = f"enable='between(t,{t0:.3f},{t1:.3f})'"
+        chains.append(
+            f"[{vi}:v]fps={fps},setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+            f"scale={bw}:{bh}:force_original_aspect_ratio=increase:flags={'bilinear' if preview else 'lanczos'},"
+            f"crop={bw}:{bh},setsar=1{',' + grade if grade else ''},format=yuva420p[c{k}];"
+            f"[{mi}:v]format=gray[m{k}];[c{k}][m{k}]alphamerge,setpts=PTS-STARTPTS+{t0:.3f}/TB[o{k}];"
+            f"{last}[o{k}]overlay={x}:{y}:eof_action=pass:{on}[b{k}]")
+        last = f"[b{k}]"
+        if o.get("border"):
+            bd = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+            ImageDraw.Draw(bd).rounded_rectangle([0, 0, bw - 1, bh - 1], radius=r, outline=(255, 255, 255, alpha),
+                                                 width=max(2, round(min(w, h) * 0.006)))
+            bd_png = work_dir / f"ov_border_{k}.png"
+            bd.save(bd_png)
+            args += ["-framerate", str(fps), "-loop", "1", "-t", f"{dur + 0.2:.3f}", "-i", str(bd_png)]
+            chains.append(f"[{n_in}:v]format=rgba,setpts=PTS-STARTPTS+{t0:.3f}/TB[d{k}];"
+                          f"{last}[d{k}]overlay={x}:{y}:eof_action=pass:{on}[e{k}]")
+            n_in += 1
+            last = f"[e{k}]"
+    out = work_dir / "video_overlays.mp4"
+    run(args + ["-filter_complex", ";".join(chains), "-map", last, "-frames:v", str(frames), "-an",
+                "-c:v", "libx264", "-preset", "ultrafast" if preview else "veryfast", "-crf", "28" if preview else "18",
+                "-pix_fmt", "yuv420p", "-color_range", "tv", "-color_primaries", "bt709", "-color_trc", "bt709",
+                "-colorspace", "bt709", "-r", str(fps), str(out)])
+    return out
+
+
 def _keep(tmp: Path, cached: Path | None) -> Path:
     """Move a freshly rendered effect shot into the cache (if there is one) and return where it is."""
     if cached is None:
@@ -187,13 +237,15 @@ def render_effect(s: Shot, i: int, tpl: dict, work_dir: Path, effects_cache: Pat
 
 def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
            out_path: Path, work_dir: Path, report: Reporter | None = None,
-           preview: bool = False, effects_cache: Path | None = None, effects: str | None = None) -> float:
+           preview: bool = False, effects_cache: Path | None = None, effects: str | None = None,
+           overlays: list[dict] | None = None) -> float:
     """`music` needs .path and .start (a Music, or the MusicRef a saved plan loads into).
     `preview`: small and fast. `effects_cache`: rendered sticker / drawn shots (and, in previews, finished
     shots) are kept there and reused by later renders.
     `effects`: "all" renders every sticker / drawn shot that isn't cached (default for full renders);
     "manual" (default for previews) only the hand-made ones, at preview size; "cached" none: shots whose
-    effect isn't in the cache yet show plain footage (the app's quick preview, filled in afterwards)."""
+    effect isn't in the cache yet show plain footage (the app's quick preview, filled in afterwards).
+    `overlays`: picture-in-picture clips laid over the joined shots (see pipeline._check_overlays)."""
     report = report or Reporter(None)
     effects = effects or ("manual" if preview else "all")
     full_w, full_h = output_size(tpl)
@@ -240,6 +292,10 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
     video_only = work_dir / "video_only.mp4"
     run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(concat_list),
          "-c", "copy", str(video_only)])
+
+    if overlays:
+        video_only = _overlay_pass(video_only, overlays, w, h, fps, grade, preview, work_dir,
+                                   sum(s.frames for s in shots))
 
     report("render", "mux", 0, 1)
     total = sum(s.frames for s in shots) / fps

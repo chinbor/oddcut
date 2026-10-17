@@ -30,6 +30,8 @@ Job parameters (paths are absolute or relative to the project root):
     music    analysis, music, [music_start], [duration]  -> like analyze; only the song is analyzed again
     edit     analysis, plan, index, [clip]  -> like plan; swaps shot `index` to `clip` (or another good clip)
     shot     analysis, plan, index, [sticker], [drawn]  -> like plan + "notes"; hand edits of one shot
+    overlays analysis, plan, overlays  -> like plan; the picture-in-picture clips (whole list, see pipeline)
+    move     analysis, plan, src, dst  -> like plan; shot src moved to position dst, cuts re-snapped to beats
              sticker: null | {id, mode: follow | fixed, keys: [{t, x, y, size}], in, out}
              drawn:   null | {style, box?, force?}   (a key left out = that part unchanged)
     check    plan, index, [box]  -> {ok, found, reason, label, box, image}: can shot `index` be drawn?
@@ -61,7 +63,7 @@ from . import __version__
 from .formats import ASPECTS
 from .paths import OUTPUT_DIR, PROJECT_ROOT, TEMPLATE_DIR
 from .pipeline import (KEEP, Options, analyze, carry_manual, edit_shot, has_manual, load_analysis, load_plan, move_cut, move_shot,
-                       plan, render_plan, replace_shot, retime, save_analysis, save_plan, with_music)
+                       plan, render_plan, replace_shot, retime, save_analysis, save_plan, set_overlays, with_music)
 from .progress import ProgressEvent
 
 APP_DIR = OUTPUT_DIR / "app"
@@ -166,7 +168,7 @@ def _analysis_result(a, out: Path) -> dict:
 def _plan_result(pl, out: Path, notes=None) -> dict:
     return {"plan": str(out), "seed": pl.seed, "duration": round(pl.duration, 2),
             "aspect": pl.template["output"]["aspect"], "fps": float(pl.template["output"]["fps"]),
-            "manual": has_manual(pl), "notes": notes or [],
+            "manual": has_manual(pl), "notes": notes or [], "overlays": pl.looks.get("overlays") or [],
             "shots": [{**s.to_dict(), "clip_path": s.clip.path, "src_start": s.src_start,
                        "t_start": s.t_start, "t_end": s.t_end} for s in pl.shots]}
 
@@ -287,6 +289,25 @@ def run_move(job: Job) -> dict:
     out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
     save_plan(pl, out)
     return _plan_result(pl, out, notes)
+
+
+def run_overlays(job: Job) -> dict:
+    p = job.params
+    plan_path = _path(p["plan"])
+    pl, notes = set_overlays(load_analysis(_path(p["analysis"])), load_plan(plan_path), p.get("overlays") or [])
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return _plan_result(pl, out, notes)
+
+
+def clip_thumbs(analysis_path: Path) -> dict:
+    """A small picture of every clip of the project (the 素材 library), in the clip's own shape."""
+    from concurrent.futures import ThreadPoolExecutor
+    a = load_analysis(analysis_path)
+    clips = [c for c in a.clips if not c.rejected]
+    with ThreadPoolExecutor(8) as ex:
+        pics = list(ex.map(lambda c: frame_at(c.path, min(1.0, c.duration * 0.3), c.width / c.height, 120), clips))
+    return {"thumbs": {c.path: p for c, p in zip(clips, pics)}}
 
 
 def run_retime(job: Job) -> dict:
@@ -464,7 +485,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "retime": run_retime, "live": run_live}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None
@@ -563,7 +584,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         parts = self.path.split("?")[0].strip("/").split("/")
-        if parts[:1] == ["api"] and len(parts) == 2 and parts[1] in ("thumbs", "still", "waveform", "folder", "songs"):
+        if parts[:1] == ["api"] and len(parts) == 2 and parts[1] in ("thumbs", "still", "waveform", "folder", "songs", "clipthumbs"):
             from urllib.parse import parse_qs, urlsplit
             q = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
             try:
@@ -577,6 +598,8 @@ class Handler(BaseHTTPRequestHandler):
                     exts = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
                     songs = sorted(str(x) for x in f.parent.iterdir() if x.suffix.lower() in exts) if f else []
                     return self._send(200, {"songs": songs})
+                if parts[1] == "clipthumbs":
+                    return self._send(200, clip_thumbs(_path(q["analysis"])))
                 plan_path = _path(q["plan"])
                 if parts[1] == "thumbs":
                     return self._send(200, plan_thumbs(plan_path))

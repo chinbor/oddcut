@@ -1,13 +1,13 @@
 import React, { useState } from 'react'
 import Icon from './icons.jsx'
 
-const TABS = [['sticker', '贴纸', 'sticker'], ['drawn', '手绘', 'brush'], ['music', '音乐', 'music']]
+const TABS = [['clips', '素材', 'film'], ['sticker', '贴纸', 'sticker'], ['drawn', '手绘', 'brush'], ['music', '音乐', 'music']]
 const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
 
-// Left library: stickers (drag onto the picture, or click to add to the shot under the playhead),
+// Left library: footage (drag onto a 画中画 track, or click to add at the playhead), stickers (drag onto the picture, or click to add to the shot under the playhead),
 // drawing styles (click = draw the selected shot), music (switch the song).
 export default function Library({ looks, activeSticker, activeStyle, onAddSticker, onApplyStyle, music, songs, onPickSong,
-                                  onBrowseMusic, busy, rail }) {
+                                  onBrowseMusic, busy, rail, clips = [], clipThumbs = {}, onAddOverlay }) {
   const [tab, setTab] = useState('sticker')
   const [open, setOpen] = useState(false)          // icon-rail mode: the panel flies out
   const show = !rail || open
@@ -24,6 +24,22 @@ export default function Library({ looks, activeSticker, activeStyle, onAddSticke
       </div>
       {show && (
         <div className="lib-body">
+          {tab === 'clips' && (
+            <>
+              <p className="hint">拖到时间轴的「画中画」轨道上，叠在画面上面播放；或点一下加到播放头这里</p>
+              <div className="clip-tiles">
+                {clips.map((c) => (
+                  <button key={c.path} className="clip-tile" disabled={busy} draggable
+                          onDragStart={(e) => { e.dataTransfer.setData('application/x-oddcut-clip', c.path); e.dataTransfer.effectAllowed = 'copy' }}
+                          onClick={() => onAddOverlay(c.path)} title={`${c.name} · ${c.duration.toFixed(1)} 秒：拖到画中画轨道，或点一下添加`}>
+                    <span className="ct-pic">{clipThumbs[c.path] ? <img src={clipThumbs[c.path]} alt="" draggable={false} /> : <i className="spin" />}
+                      <small>{c.duration.toFixed(1)}s</small></span>
+                    <span className="ct-name">{c.name}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           {tab === 'sticker' && (
             <>
               <p className="hint">拖到画面上任意位置，或点一下加到播放头所在的镜头</p>

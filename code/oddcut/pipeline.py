@@ -530,6 +530,59 @@ def move_shot(analysis: Analysis, p: Plan, src: int, dst: int) -> tuple[Plan, li
     return replace(p, shots=shots, looks={**p.looks, "edited_cuts": True}), notes
 
 
+OVERLAY_TRACKS = 3       # 画中画 1..3 above the main track; a higher track is drawn on top
+MIN_OVERLAY = 0.3
+
+
+def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
+    """Picture-in-picture clips laid over the edit: {id, track, clip, src_start, t_start, t_end, x, y, w, h
+    (box, 0..1 of the frame, top-left), opacity, radius (share of the box's short side), border}."""
+    clips = {_norm(c.path): c for c in analysis.clips}
+    out = []
+    for n, o in enumerate(overlays or []):
+        c = clips.get(_norm(o["clip"]))
+        if c is None:
+            raise ValueError(f"画中画的素材不在这个项目里：{Path(o['clip']).name}")
+        src = min(max(0.0, float(o.get("src_start") or 0.0)), max(0.0, c.duration - MIN_OVERLAY))
+        t0 = min(max(0.0, float(o["t_start"])), total - MIN_OVERLAY)
+        t1 = min(float(o["t_end"]), total, t0 + c.duration - src)
+        if t1 - t0 < MIN_OVERLAY - 1e-6:
+            raise ValueError("画中画片段太短（至少 0.3 秒）")
+        w = min(1.0, max(0.05, float(o.get("w", 0.5))))
+        h = min(1.0, max(0.05, float(o.get("h", 0.5))))
+        out.append({"id": str(o.get("id") or f"ov{n}"), "track": min(OVERLAY_TRACKS - 1, max(0, int(o.get("track", 0)))),
+                    "clip": c.path, "name": c.name, "src_start": round(src, 3), "t_start": round(t0, 3), "t_end": round(t1, 3),
+                    "x": round(min(1.0 - 0.02, max(0.02 - w, float(o.get("x", 0.0)))), 4),
+                    "y": round(min(1.0 - 0.02, max(0.02 - h, float(o.get("y", 0.0)))), 4), "w": round(w, 4), "h": round(h, 4),
+                    "opacity": round(min(1.0, max(0.05, float(o.get("opacity", 1.0)))), 3),
+                    "radius": round(min(0.5, max(0.0, float(o.get("radius", 0.0)))), 3), "border": bool(o.get("border"))})
+    return out
+
+
+def set_overlays(analysis: Analysis, p: Plan, overlays) -> tuple[Plan, list[str]]:
+    return replace(p, looks={**p.looks, "overlays": _check_overlays(analysis, p.duration, overlays)}), []
+
+
+def _resnap_overlays(analysis: Analysis, overlays: list[dict], total: float) -> tuple[list[dict], list[str]]:
+    """Overlays on another song: same times, their ends moved to the nearest beats of the new one."""
+    grid = analysis.music.grid
+    near = lambda t: float(grid[np.argmin(np.abs(grid - t))]) if len(grid) else t
+    out, dropped = [], 0
+    for o in overlays:
+        if o["t_start"] >= total - MIN_OVERLAY:
+            dropped += 1
+            continue
+        t0, t1 = near(o["t_start"]), near(o["t_end"])
+        if t1 - t0 < MIN_OVERLAY:
+            t0, t1 = o["t_start"], o["t_end"]
+        out.append({**o, "t_start": t0, "t_end": min(t1, total)})
+    try:
+        out = _check_overlays(analysis, total, out)
+    except ValueError:
+        out = [o for o in out if o["t_end"] - o["t_start"] >= MIN_OVERLAY]
+    return out, ([f"{dropped} 个画中画在新歌结束之后，已去掉"] if dropped else [])
+
+
 def retime(analysis: Analysis, p: Plan) -> tuple[Plan, list[str]]:
     """Keep this edit (shots, footage, stickers, drawings) but put it on another song: every cut snaps to the
     nearest beat of the new song, drawn shots reveal on its strongest beat, the music reference changes."""
@@ -569,7 +622,11 @@ def retime(analysis: Analysis, p: Plan) -> tuple[Plan, list[str]]:
             s.sticker_at = {**s.sticker_at, "out": min(float(s.sticker_at["out"]), s.t_end - s.t_start)}
     m = analysis.music
     music = MusicRef(m.path, float(m.start), float(m.tempo), float(m.beat_period))
-    return replace(p, shots=shots, music=music, looks={**p.looks, "edited_cuts": True}), notes
+    looks = {**p.looks, "edited_cuts": True}
+    if p.looks.get("overlays"):
+        looks["overlays"], more = _resnap_overlays(analysis, p.looks["overlays"], bounds[-1])
+        notes += more
+    return replace(p, shots=shots, music=music, looks=looks), notes
 
 
 def carry_manual(old: Plan, new: Plan, analysis: Analysis) -> tuple[Plan, list[str]]:
@@ -615,7 +672,8 @@ def render_plan(p: Plan, out_path: str | Path, keep_temp: bool = False,
     out = Path(out_path)
     work = out.parent / f".{out.stem}_work"
     total = render(p.shots, p.music, p.template, Path(p.template_path).parent, out, work, report,
-                   preview=preview, effects_cache=Path(effects_cache) if effects_cache else None, effects=effects)
+                   preview=preview, effects_cache=Path(effects_cache) if effects_cache else None, effects=effects,
+                   overlays=p.looks.get("overlays"))
     timeline = {
         "output": str(out), "duration": round(total, 3), "tempo": round(p.music.tempo, 2),
         "music": p.music.path, "music_start": p.music.start, "seed": p.seed,

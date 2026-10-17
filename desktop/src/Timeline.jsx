@@ -12,7 +12,8 @@ const fmtS = (t) => (Number.isInteger(t) ? `${t}s` : `${t.toFixed(1)}s`)
 
 export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot, aspect = 0.5625, wave, time, onSeek, selected, onSelect, stickerName, styleName,
                                    draft, onInOut, onCutMove, busy, pending, live, looks, keySel, onKeySelect, onKeyTime,
-                                   metronome, setMetronome }) {
+                                   metronome, setMetronome, overlays = [], ovSel, onSelectOverlay, onOverlayDraft, onOverlayCommit,
+                                   onDropClip, clipThumbs = {}, clipInfo }) {
   const scroller = useRef(null)
   const canvas = useRef(null)
   const [width, setWidth] = useState(800)
@@ -113,7 +114,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
   }
   const scrub = (e, deselect = false) => {
     e.preventDefault()
-    if (deselect) onSelect(null)
+    if (deselect) { onSelect(null); onSelectOverlay(null) }
     const go = (ev) => onSeek(Math.min(duration - 0.01, Math.max(0, tAt(ev.clientX))))
     go(e)
     const up = () => { window.removeEventListener('pointermove', go); window.removeEventListener('pointerup', up) }
@@ -233,6 +234,51 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
   }
 
+  // picture-in-picture lanes: drag a clip in time and between lanes, its ends to trim; beats pull like cuts do
+  const LANE_H = 32
+  const snapT = (tt, ev, lo = 0, hi = duration) => {
+    if (snap === ev.altKey || !beats.length) return tt
+    const b = beats.reduce((m, v) => (Math.abs(v.t - tt) < Math.abs(m.t - tt) ? v : m), beats[0])
+    return b.t >= lo && b.t <= hi && Math.abs(b.t - tt) < 0.35 ? b.t : tt
+  }
+  const ovDrag = (e, o, what) => {
+    if (busy || e.button !== 0) return
+    e.preventDefault(); e.stopPropagation()
+    onSelectOverlay(o.id)
+    const x0 = e.clientX, y0 = e.clientY
+    const len = o.t_end - o.t_start
+    const clipLen = clipInfo?.(o.clip)?.duration ?? (o.src_start + len)
+    let moved = false
+    const mv = (ev) => {
+      moved = true
+      if (what === 'body') {
+        let t0 = Math.min(duration - len, Math.max(0, o.t_start + (ev.clientX - x0) / scale))
+        t0 = snapT(t0, ev, 0, duration - len)
+        const track = Math.min(2, Math.max(0, o.track - Math.round((ev.clientY - y0) / LANE_H)))
+        onOverlayDraft(o.id, { t_start: t0, t_end: t0 + len, track })
+      } else if (what === 'in') {
+        const lo = Math.max(0, o.t_start - o.src_start), hi = o.t_end - 0.3
+        const t0 = snapT(Math.min(hi, Math.max(lo, tAt(ev.clientX))), ev, lo, hi)
+        onOverlayDraft(o.id, { t_start: t0, src_start: o.src_start + (t0 - o.t_start) })
+      } else {
+        const lo = o.t_start + 0.3, hi = Math.min(duration, o.t_start + clipLen - o.src_start)
+        onOverlayDraft(o.id, { t_end: snapT(Math.min(hi, Math.max(lo, tAt(ev.clientX))), ev, lo, hi) })
+      }
+    }
+    const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); if (moved) onOverlayCommit(o.id) }
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
+  }
+  const lanes = Math.min(3, Math.max(-1, ...overlays.map((o) => o.track)) + 2)
+  const laneDrop = (k) => ({
+    onDragOver: (e) => { if (e.dataTransfer.types.includes('application/x-oddcut-clip')) { e.preventDefault(); e.currentTarget.classList.add('drop') } },
+    onDragLeave: (e) => e.currentTarget.classList.remove('drop'),
+    onDrop: (e) => {
+      e.currentTarget.classList.remove('drop')
+      const path = e.dataTransfer.getData('application/x-oddcut-clip')
+      if (path) { e.preventDefault(); onDropClip(path, k, Math.max(0, tAt(e.clientX))) }
+    },
+  })
+
   const cutState = (t) => {
     const b = nearestBeat(t)
     if (b && Math.abs(b.t - t) < 0.6 / fps) return { on: true, text: b.half ? '踩在半拍上' : `踩在第 ${b.no} 拍${b.down ? '（重拍）' : ''}` }
@@ -263,7 +309,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
         </div>
       </div>
       <div className="tl-scroll" ref={scroller}
-           onPointerDown={(e) => { if (e.target.classList.contains('track') || e.target.classList.contains('tl-inner')) onSelect(null) }}>
+           onPointerDown={(e) => { if (e.target.classList.contains('track') || e.target.classList.contains('tl-inner')) { onSelect(null); onSelectOverlay(null) } }}>
         <div className="tl-inner" style={{ width: LABEL_W + duration * scale + (zoom > 1 ? 20 : 8) }}>
           <div className="tl-ruler" onPointerDown={(e) => scrub(e, true)} title="点这里回到整段播放">
             <span className="lab-pad" />
@@ -281,6 +327,26 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                         style={{ left: x(b.t) }} />
             })}
           </div>
+
+          {Array.from({ length: lanes }, (_, n) => lanes - 1 - n).map((k) => {
+            const mine = overlays.filter((o) => o.track === k)
+            return (
+              <div key={`pip${k}`} className="track pip" {...laneDrop(k)}>
+                <label><Icon name="film" size={14} />画中画 {k + 1}</label>
+                {!mine.length && <span className="lane-hint" style={{ left: LABEL_W + 10 }}>把左边「素材」里的视频拖到这里，叠在画面上播放</span>}
+                {mine.map((o) => (
+                  <div key={o.id} className={`bar ov ${ovSel === o.id ? 'sel' : ''}`}
+                       style={{ left: x(o.t_start) + 1, width: Math.max(8, (o.t_end - o.t_start) * scale - 2) }}
+                       onPointerDown={(e) => ovDrag(e, o, 'body')} title={`${o.name} · ${o.t_start.toFixed(2)} – ${o.t_end.toFixed(2)} 秒（拖动改时间/轨道，拖两端剪短）`}>
+                    <i className="edge l" onPointerDown={(e) => ovDrag(e, o, 'in')} />
+                    {clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} />}
+                    <span>{o.name}</span>
+                    <i className="edge r" onPointerDown={(e) => ovDrag(e, o, 'out')} />
+                  </div>
+                ))}
+              </div>
+            )
+          })}
 
           <div className="track video">
             <label><Icon name="film" size={16} />画面</label>

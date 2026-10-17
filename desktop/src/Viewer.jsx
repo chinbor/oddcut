@@ -29,7 +29,8 @@ function rdp(pts, eps) {
 export default function Viewer({ src, videoRef, time, onTime, playing, setPlaying, duration, fps, aspect, shot,
                                  draft, track, stickerImage, showImage, autoSticker, keySel, onSelectKey, onDraft,
                                  onMoveKey, onCommit, onDeleteKey, onStillKey, onPlaceAuto, onDropSticker, recordArmed,
-                                 onRecorded, boxMode, onBox, status, wave, segment, loop, setLoop }) {
+                                 onRecorded, boxMode, onBox, status, wave, segment, loop, setLoop, overlays = [], ovSel,
+                                 onSelectOverlay, onOverlayDraft, onOverlayCommit, clipThumbs = {}, ovShowImage }) {
   const boxRef = useRef(null)
   const [aw, ah] = aspect
   const keep = useRef({ t: 0, playing: false })
@@ -166,6 +167,30 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     drag(e, (ev) => { moved = true; const [x, y] = norm(ev); onMoveKey(j, x, y) }, () => { if (moved) onCommit() })
   }
 
+  // picture-in-picture: click to select, drag to move, corners resize (the box keeps its shape)
+  const ovDown = (e, o) => {
+    if (e.button !== 0) return
+    if (o.id !== ovSel) onSelectOverlay(o.id)
+    const [x0, y0] = norm(e)
+    let moved = false
+    drag(e, (ev) => { const [x, y] = norm(ev); moved = true; onOverlayDraft(o.id, { x: o.x + x - x0, y: o.y + y - y0 }) },
+         () => { if (moved) onOverlayCommit() })
+  }
+  const ovResize = (e, o, c) => {
+    const r = rect()
+    const ratio = (o.w * r.width) / (o.h * r.height)            // box shape in pixels
+    const ax = c.includes('w') ? o.x + o.w : o.x, ay = c.includes('n') ? o.y + o.h : o.y   // the opposite corner stays
+    drag(e, (ev) => {
+      const [x, y] = norm(ev)
+      let wpx = Math.max(Math.abs(x - ax) * r.width, Math.abs(y - ay) * r.height * ratio, 24)
+      let w = Math.min(1.5, wpx / r.width), h = (wpx / ratio) / r.height
+      onOverlayDraft(o.id, { w, h, x: c.includes('w') ? ax - w : ax, y: c.includes('n') ? ay - h : ay })
+    })
+  }
+  const frameW = boxRef.current ? boxRef.current.getBoundingClientRect().width : 0
+  const frameH = boxRef.current ? boxRef.current.getBoundingClientRect().height : 0
+  const liveOv = overlays.filter((o) => time >= o.t_start && time < o.t_end).sort((a, b) => a.track - b.track)
+
   // 边播边拖: hold the sticker, playback runs at half speed, the drag is recorded and thinned into keyframes
   const startRecording = (e) => {
     const v = videoRef.current
@@ -282,6 +307,19 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
                 {!recordArmed && ['nw', 'ne', 'sw', 'se'].map((c) => <i key={c} className={`corner ${c}`} onPointerDown={resize} />)}
               </div>
             )}
+            {liveOv.map((o) => {
+              const sel = o.id === ovSel
+              if (!sel && shot) return null                  // while a shot is being edited, overlays stay out of the way
+              return (
+                <div key={o.id} className={`ov-box ${sel ? 'sel' : ''}`} onPointerDown={(e) => ovDown(e, o)}
+                     title={sel ? '拖动移动，拖四角缩放' : `画中画 ${o.track + 1}：点一下选中`}
+                     style={{ left: `${o.x * 100}%`, top: `${o.y * 100}%`, width: `${o.w * 100}%`, height: `${o.h * 100}%`,
+                              borderRadius: o.radius * Math.min(o.w * frameW, o.h * frameH) }}>
+                  {sel && ovShowImage && clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} style={{ opacity: o.opacity }} />}
+                  {sel && ['nw', 'ne', 'sw', 'se'].map((c) => <i key={c} className={`corner ${c}`} onPointerDown={(e) => ovResize(e, o, c)} />)}
+                </div>
+              )
+            })}
             {boxDraft && (
               <i className="subject-box" style={{ left: `${boxDraft[0] * 100}%`, top: `${boxDraft[1] * 100}%`,
                                                  width: `${(boxDraft[2] - boxDraft[0]) * 100}%`, height: `${(boxDraft[3] - boxDraft[1]) * 100}%` }} />

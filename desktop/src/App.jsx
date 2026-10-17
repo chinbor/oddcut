@@ -3,6 +3,7 @@ import Icon from './icons.jsx'
 import Library from './Library.jsx'
 import NewProject from './NewProject.jsx'
 import Properties from './Properties.jsx'
+import OverlayProps from './OverlayProps.jsx'
 import Timeline from './Timeline.jsx'
 import Viewer from './Viewer.jsx'
 
@@ -46,6 +47,9 @@ export default function App() {
   const [thumbs, setThumbs] = useState(null)
   const [strips, setStrips] = useState(null)            // 4 frames across each shot, for the timeline filmstrip
   const [loop, setLoop] = useState(false)               // loop the selected shot while it plays
+  const [ovSel, setOvSel] = useState(null)              // id of the selected picture-in-picture clip
+  const [ovDraft, setOvDraft] = useState(null)          // overlays being dragged / edited (null = the plan's)
+  const [clipThumbs, setClipThumbs] = useState({})
   const [wave, setWave] = useState(null)
   const [draft, setDraft] = useState(null)              // working copy of the selected shot's hand-placed sticker
   const [track, setTrack] = useState(null)
@@ -283,6 +287,56 @@ export default function App() {
       return { ...d, keys }
     })
   }
+  // ---------------------------------------------------------------- picture-in-picture
+  const overlays = ovDraft || plan?.overlays || []
+  const ovRef = useRef(overlays)
+  ovRef.current = overlays
+  useEffect(() => { setOvDraft(null) }, [plan?.plan])
+  useEffect(() => { if (selected != null) setOvSel(null) }, [selected])
+  useEffect(() => { if (plan && ovSel && !(plan.overlays || []).some((o) => o.id === ovSel)) setOvSel(null) }, [plan?.plan])
+  useEffect(() => {
+    if (!analysis?.analysis) return
+    vc.api('GET', `/api/clipthumbs?analysis=${q(analysis.analysis)}`).then((r) => setClipThumbs(r.thumbs)).catch(() => {})
+  }, [analysis?.analysis])
+  const clipInfo = (path) => analysis?.clips.find((c) => c.path === path)
+  const pipBox = (path) => {                            // a small window top-right, in the clip's own shape
+    const c = clipInfo(path)
+    const [aw0, ah0] = plan.aspect.split(':').map(Number)
+    const w = 0.44
+    return { x: 0.52, y: 0.05, w, h: Math.min(0.9, w * (aw0 / ah0) * (c ? c.size[1] / c.size[0] : 9 / 16)) }
+  }
+  const overlapAt = (list, o) => list.some((p) => p.id !== o.id && p.track === o.track && p.t_start < o.t_end - 1e-3 && o.t_start < p.t_end - 1e-3)
+  const applyOverlays = guard(async (list) => commit(await runJob({ kind: 'overlays', analysis: analysis.analysis, plan: plan.plan, overlays: list })))
+  const selectOverlay = (id) => { setSelected(null); setOvSel(id); const o = overlays.find((x) => x.id === id); if (o && (time < o.t_start || time >= o.t_end)) setTime(o.t_start + 0.01) }
+  const addOverlay = (path, track = null, at = time) => {
+    const c = clipInfo(path)
+    if (!c) return
+    const grid = (wave?.grid?.t || []).filter((_, i) => wave.grid.on_beat?.[i])
+    const near = grid.length ? grid.reduce((b, v) => (Math.abs(v - at) < Math.abs(b - at) ? v : b)) : at
+    const t0 = Math.max(0, Math.min(near, plan.duration - 0.5))
+    const t1 = Math.min(plan.duration, t0 + Math.min(3, c.duration))
+    const o = { id: `ov${Date.now().toString(36)}`, clip: path, src_start: 0, t_start: t0, t_end: t1, ...pipBox(path), opacity: 1, radius: 0.06, border: false }
+    const tracks = track != null ? [track, 0, 1, 2] : [0, 1, 2]
+    const tr = tracks.find((k) => !overlapAt(overlays, { ...o, track: k }))
+    if (tr == null) { toast('这个时间三条画中画轨道都占满了，换个时间再加'); return }
+    setOvSel(o.id); setSelected(null); setTime(t0 + 0.01)
+    applyOverlays([...overlays, { ...o, track: tr }])
+  }
+  const editOverlay = (id, patch) => setOvDraft((l) => (l || plan.overlays || []).map((o) => (o.id === id ? { ...o, ...patch } : o)))
+  const commitOverlays = (movedId = null) => setTimeout(() => {
+    let list = ovRef.current
+    const m = movedId && list.find((o) => o.id === movedId)
+    if (m && overlapAt(list, m)) {                      // landed on another clip: next free track, or undo the drag
+      const free = [m.track, ...[0, 1, 2].filter((k) => k !== m.track)].find((k) => !overlapAt(list, { ...m, track: k }))
+      if (free == null) { toast('那里已经有画中画了'); setOvDraft(null); return }
+      list = list.map((o) => (o.id === movedId ? { ...o, track: free } : o))
+    }
+    if (JSON.stringify(list) === JSON.stringify(plan.overlays || [])) { setOvDraft(null); return }
+    applyOverlays(list)
+  }, 30)
+  const deleteOverlay = (id) => { setOvSel(null); applyOverlays(overlays.filter((o) => o.id !== id)) }
+  const curOv = overlays.find((o) => o.id === ovSel) || null
+
   const draftRef = useRef(null)
   draftRef.current = myDraft
   // after the drag's last state update has rendered (draftRef is set during render)
@@ -418,7 +472,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (e) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return
-      if (e.key === 'Escape') { if (recordArmed) setRecordArmed(false); else if (boxMode) setBoxMode(false); else if (menu) setMenu(false); else setSelected(null) }
+      if (e.key === 'Escape') { if (recordArmed) setRecordArmed(false); else if (boxMode) setBoxMode(false); else if (menu) setMenu(false); else { setSelected(null); setOvSel(null) } }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && ovSel && keySel == null && !busy) { e.preventDefault(); deleteOverlay(ovSel) }
       if ((e.key === 'Delete' || e.key === 'Backspace') && keySel != null && myDraft && !busy) { e.preventDefault(); deleteKey(keySel) }
       if (!(e.ctrlKey || e.metaKey)) return
       const k = e.key.toLowerCase()
@@ -471,7 +526,7 @@ export default function App() {
   const autoSticker = !!(shot && shot.sticker && !shot.sticker_at)
 
   return (
-    <div className={`editor ${shot ? 'with-props' : ''} ${rail ? 'narrow' : ''}`}>
+    <div className={`editor ${shot || curOv ? 'with-props' : ''} ${rail ? 'narrow' : ''}`}>
       <header className="topbar">
         <button className="ghost" onClick={() => setView('new')} title="新建 / 改素材"><Icon name="back" size={18} />新建</button>
         <div className="title">
@@ -500,7 +555,8 @@ export default function App() {
 
       <Library looks={looks} activeSticker={shot?.sticker?.split('@')[0]} activeStyle={shot?.drawn ? shot.drawn.style || 'lineart' : null}
                onAddSticker={addSticker} onApplyStyle={applyStyle} music={{ path: analysis?.music?.path, name: analysis?.music?.name, tempo: analysis?.music?.tempo }}
-               songs={songs} onPickSong={(s) => changeMusic(s)} onBrowseMusic={() => changeMusic()} busy={busy} rail={rail} />
+               songs={songs} onPickSong={(s) => changeMusic(s)} onBrowseMusic={() => changeMusic()} busy={busy} rail={rail}
+               clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} onAddOverlay={(p) => addOverlay(p)} />
 
       <Viewer src={previewSrc && mediaUrl(previewSrc)} videoRef={videoRef} time={time} onTime={setTime} playing={playing} setPlaying={setPlaying}
               duration={plan.duration} fps={plan.fps || 30} aspect={[aw, ah]} shot={shot} draft={myDraft} track={track}
@@ -509,9 +565,15 @@ export default function App() {
               showImage={draftDirty || !previewSrc || (live?.pending || []).includes(selected)} keySel={keySel} onSelectKey={setKeySel}
               onMoveKey={moveKey} onDeleteKey={deleteKey} onStillKey={stillKey} onPlaceAuto={placeAuto}
               recordArmed={recordArmed} onRecorded={onRecorded} wave={wave} segment={recordArmed ? null : segment} loop={loop} setLoop={setLoop}
+              overlays={overlays} ovSel={ovSel} onSelectOverlay={selectOverlay} onOverlayDraft={editOverlay} onOverlayCommit={() => commitOverlays()}
+              clipThumbs={clipThumbs} ovShowImage={!!ovDraft || !!live?.starting || (live && live.total > live.done)}
               onBox={(b) => { setBoxMode(false); drawShot(selected, shot.drawn?.style || 'lineart', b) }}
               status={live?.starting ? '正在生成预览…' : null} />
 
+      {curOv && !shot && (
+        <OverlayProps ov={curOv} thumb={clipThumbs[curOv.clip]} pip={pipBox(curOv.clip)} busy={busy} onClose={() => setOvSel(null)}
+                      onChange={(p) => editOverlay(curOv.id, p)} onCommit={() => commitOverlays(curOv.id)} onDelete={() => deleteOverlay(curOv.id)} />
+      )}
       {shot && (
         <Properties shot={shot} index={selected} thumb={thumbs?.[selected]} looks={looks}
                     usableClips={analysis ? analysis.clips.filter((c) => !c.rejected) : []}
@@ -530,7 +592,9 @@ export default function App() {
       )}
 
       <Timeline plan={plan} thumbs={thumbs} strips={strips} wave={wave} time={time} onSeek={setTime} selected={selected}
-                onSelect={setSelected} onPlayShot={playShot} onMoveShot={moveShot} aspect={aw / ah} stickerName={stickerName} styleName={styleName} draft={myDraft} onInOut={onInOut}
+                onSelect={setSelected} onPlayShot={playShot} onMoveShot={moveShot} aspect={aw / ah}
+                overlays={overlays} ovSel={ovSel} onSelectOverlay={selectOverlay} onOverlayDraft={editOverlay}
+                onOverlayCommit={commitOverlays} onDropClip={addOverlay} clipThumbs={clipThumbs} clipInfo={clipInfo} stickerName={stickerName} styleName={styleName} draft={myDraft} onInOut={onInOut}
                 onCutMove={moveCut} busy={busy} pending={live?.pending || []} live={live} looks={looks}
                 keySel={keySel} onKeySelect={setKeySel} onKeyTime={keyTime} metronome={metronome} setMetronome={setMetronome} />
       {toastsEl}
