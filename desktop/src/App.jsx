@@ -49,6 +49,9 @@ export default function App() {
   const [track, setTrack] = useState(null)
   const [check, setCheck] = useState(null)              // drawable check of the selected shot
   const [boxMode, setBoxMode] = useState(false)
+  const [keySel, setKeySel] = useState(null)            // selected keyframe of the selected shot's sticker
+  const [recordArmed, setRecordArmed] = useState(false) // 边播边拖 waiting for the user to grab the sticker
+  const [metronome, setMetronome] = useState(false)
   const [past, setPast] = useState([])
   const [future, setFuture] = useState([])
   const [toasts, setToasts] = useState([])
@@ -222,6 +225,8 @@ export default function App() {
     setDraft(s?.sticker_at ? { index: selected, id: s.sticker.split('@')[0], ...s.sticker_at } : null)
     setCheck((c) => (c && c.index === selected ? c : null))
     setBoxMode(false)
+    setRecordArmed(false)
+    setKeySel(null)
   }, [plan?.plan, selected])
   const myDraft = draft && draft.index === selected ? draft : null
   const draftKey = myDraft ? JSON.stringify([myDraft.mode, myDraft.keys]) : ''
@@ -268,6 +273,84 @@ export default function App() {
     setDraft((d) => (d ? { ...d, [which]: v } : d))
     if (done) commitDraft()
   }
+  // ---- keyframes
+  const fpsP = plan?.fps || 30
+  const keyAt = (() => {
+    if (!myDraft || selected == null) return { here: null, prev: null, next: null }
+    const t = localT(selected)
+    let here = null, prev = null, next = null
+    myDraft.keys.forEach((k, j) => {
+      if (Math.abs(k.t - t) < 0.5 / fpsP) here = j
+      else if (k.t < t) prev = j
+      else if (next == null) next = j
+    })
+    return { here, prev, next }
+  })()
+  const commitPlace = (d) => { const { index, ...place } = d; applyShot(index, { sticker: place }) }
+  const seekKey = (j) => { if (j == null) return; setKeySel(j); setTime(plan.shots[selected].t_start + myDraft.keys[j].t + 0.001) }
+  const deleteKey = (j) => {
+    if (myDraft.keys.length <= 1) { toast('至少要留一个关键帧；不想要这个贴纸可以点删除'); return }
+    setKeySel(null)
+    commitPlace({ ...myDraft, keys: myDraft.keys.filter((_, i) => i !== j) })
+  }
+  const toggleKey = () => {
+    if (keyAt.here != null) return deleteKey(keyAt.here)
+    editDraft({})                                   // a keyframe at the playhead, where the sticker is now
+    commitDraft()
+  }
+  const stillKey = (j) => commitPlace({ ...myDraft, mode: 'still', keys: [{ ...myDraft.keys[j], t: 0 }] })
+  const moveKey = (j, x, y) => setDraft((d) => ({ ...d, keys: d.keys.map((k, i) => (i === j ? { ...k, x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) } : k)) }))
+  const keyTime = (j, t, done) => {
+    setDraft((d) => ({ ...d, keys: d.keys.map((k, i) => (i === j ? { ...k, t } : k)) }))
+    if (done) commitDraft()
+  }
+  const onRecorded = (keys, t0, t1) => {
+    setRecordArmed(false)
+    const sizeAt = (t) => (track ? track.size[Math.min(track.frames - 1, Math.max(0, Math.round(t * track.fps)))] : 0.22)
+    const kept = myDraft.keys.filter((k) => k.t < t0 - 1 / fpsP || k.t > t1 + 1 / fpsP)
+    const rec = keys.map((k) => ({ ...k, size: sizeAt(k.t) }))
+    commitPlace({ ...myDraft, mode: 'path', keys: [...kept, ...rec].sort((a, b) => a.t - b.t) })
+    toast(`录好了：${rec.length} 个关键帧，贴纸会按你拖的路线走`)
+  }
+  const placeAuto = (x, y) => {
+    const s = plan.shots[selected]
+    applyShot(selected, { sticker: { id: s.sticker.split('@')[0], mode: 'follow', in: 0, keys: [{ t: localT(selected), x, y, size: 0.22 }] } })
+  }
+  const draftDirty = (() => {
+    const s = myDraft && plan?.shots[selected]
+    if (!s) return false
+    const n = (d) => d && JSON.stringify([d.mode, d.keys, d.in || 0, d.out ?? null])
+    return n(myDraft) !== n(s.sticker_at)
+  })()
+
+  // ---- metronome: a click on every beat while playing (downbeats higher)
+  const audio = useRef(null)
+  useEffect(() => {
+    if (!playing || !metronome || !wave?.grid?.t?.length) return
+    const ctx = audio.current || (audio.current = new AudioContext())
+    let prev = videoRef.current?.currentTime ?? 0
+    let id
+    const loop = () => {
+      const now = videoRef.current?.currentTime ?? prev
+      if (now > prev) {
+        wave.grid.t.forEach((b, i) => {
+          if (b > prev && b <= now && wave.grid.on_beat?.[i]) {
+            const o = ctx.createOscillator(), g = ctx.createGain()
+            o.frequency.value = wave.grid.downbeat?.[i] ? 1760 : 1100
+            g.gain.setValueAtTime(0.35, ctx.currentTime)
+            g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05)
+            o.connect(g).connect(ctx.destination)
+            o.start(); o.stop(ctx.currentTime + 0.06)
+          }
+        })
+      }
+      prev = now
+      id = requestAnimationFrame(loop)
+    }
+    id = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(id)
+  }, [playing, metronome, wave])
+
   const curSize = (() => {
     if (!myDraft || selected == null) return null
     const f = track ? Math.min(track.frames - 1, Math.max(0, Math.round(localT(selected) * track.fps))) : 0
@@ -312,7 +395,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (e) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return
-      if (e.key === 'Escape') { if (boxMode) setBoxMode(false); else if (menu) setMenu(false); else setSelected(null) }
+      if (e.key === 'Escape') { if (recordArmed) setRecordArmed(false); else if (boxMode) setBoxMode(false); else if (menu) setMenu(false); else setSelected(null) }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && keySel != null && myDraft && !busy) { e.preventDefault(); deleteKey(keySel) }
       if (!(e.ctrlKey || e.metaKey)) return
       const k = e.key.toLowerCase()
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
@@ -399,6 +483,9 @@ export default function App() {
               duration={plan.duration} fps={plan.fps || 30} aspect={[aw, ah]} shot={shot} draft={myDraft} track={track}
               stickerImage={myDraft && looks.stickers.find((s) => s.id === myDraft.id)?.preview} autoSticker={autoSticker}
               onDraft={editDraft} onCommit={commitDraft} onDropSticker={dropSticker} boxMode={boxMode}
+              showImage={draftDirty || !previewSrc || (live?.pending || []).includes(selected)} keySel={keySel} onSelectKey={setKeySel}
+              onMoveKey={moveKey} onDeleteKey={deleteKey} onStillKey={stillKey} onPlaceAuto={placeAuto}
+              recordArmed={recordArmed} onRecorded={onRecorded} wave={wave}
               onBox={(b) => { setBoxMode(false); drawShot(selected, shot.drawn?.style || 'lineart', b) }}
               status={live?.starting ? '正在生成预览…' : null} />
 
@@ -413,12 +500,15 @@ export default function App() {
                     onDrawn={(on) => { if (on) drawShot(selected, 'lineart'); else { setCheck(null); applyShot(selected, { drawn: null }) } }}
                     onStyle={(st) => drawShot(selected, st)}
                     onForceDrawn={() => { const c = check; setCheck(null); applyShot(selected, { drawn: { style: 'lineart', box: c?.box, force: true, label: c?.label } }) }}
-                    onBoxMode={() => setBoxMode(true)} stickerName={stickerName} />
+                    onBoxMode={() => setBoxMode(true)} stickerName={stickerName}
+                    keyAt={keyAt} onPrevKey={() => seekKey(keyAt.prev)} onNextKey={() => seekKey(keyAt.next)} onToggleKey={toggleKey}
+                    recordArmed={recordArmed} onRecordArm={() => setRecordArmed((v) => !v)} />
       )}
 
       <Timeline plan={plan} thumbs={thumbs} wave={wave} time={time} onSeek={setTime} selected={selected}
                 onSelect={setSelected} stickerName={stickerName} styleName={styleName} draft={myDraft} onInOut={onInOut}
-                onCutMove={moveCut} busy={busy} pending={live?.pending || []} live={live} looks={looks} />
+                onCutMove={moveCut} busy={busy} pending={live?.pending || []} live={live} looks={looks}
+                keySel={keySel} onKeySelect={setKeySel} onKeyTime={keyTime} metronome={metronome} setMetronome={setMetronome} />
       {toastsEl}
     </div>
   )

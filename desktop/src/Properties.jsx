@@ -1,10 +1,17 @@
 import React, { useState } from 'react'
 import Icon from './icons.jsx'
 
+const MODES = [
+  ['follow', '跟着物体', '贴纸粘在它下面的东西上，跟着一起动。在别的时刻拖它，就是纠正位置。'],
+  ['path', '按我画的路线', '贴纸沿着你放的关键帧走一条平滑的路线，不看画面内容。'],
+  ['still', '停在原地', '贴纸一直停在一个位置，不动。'],
+]
+
 // Right panel, only while a shot is selected. Every change applies right away (one undo step each).
 export default function Properties({ shot, index, thumb, looks, usableClips, draft, check, busy, onClose, onSwap,
                                      onRemoveSticker, onMode, onSize, onSizeCommit, onDrawn, onStyle, onForceDrawn,
-                                     onBoxMode, stickerName }) {
+                                     onBoxMode, stickerName, keyAt, onPrevKey, onToggleKey, onNextKey, recordArmed,
+                                     onRecordArm }) {
   const [pickClip, setPickClip] = useState(false)
   const len = shot.t_end - shot.t_start
   const sid = shot.sticker ? shot.sticker.split('@')[0] : null
@@ -12,6 +19,8 @@ export default function Properties({ shot, index, thumb, looks, usableClips, dra
   const keys = draft?.keys || []
   const local = draft?.cur
   const curSize = draft?.curSize ?? 0.22
+  const mode = draft?.mode === 'fixed' ? 'path' : draft?.mode || 'follow'
+
   const drawnOn = !!shot.drawn
   const style = shot.drawn?.style || 'lineart'
 
@@ -51,19 +60,38 @@ export default function Properties({ shot, index, thumb, looks, usableClips, dra
             </div>
             {manual ? (
               <>
-                <div className="segmented">
-                  <button className={draft?.mode !== 'fixed' ? 'on' : ''} disabled={busy} onClick={() => onMode('follow')}
-                          title="贴纸跟着画面里那个位置一起动">跟随画面</button>
-                  <button className={draft?.mode === 'fixed' ? 'on' : ''} disabled={busy} onClick={() => onMode('fixed')}
-                          title="贴纸停在屏幕上这个位置">固定位置</button>
+                <div className="field">
+                  <span className="field-label">怎么动</span>
+                  <div className="segmented three">
+                    {MODES.map(([id, label]) => (
+                      <button key={id} className={mode === id ? 'on' : ''} disabled={busy} onClick={() => onMode(id)}>{label}</button>
+                    ))}
+                  </div>
+                  <p className="caption">{MODES.find(([id]) => id === mode)[2]}</p>
                 </div>
+                {mode !== 'still' && (
+                  <div className="field">
+                    <span className="field-label">关键帧</span>
+                    <div className="keybar">
+                      <button className="icon" disabled={busy || keyAt.prev == null} onClick={onPrevKey} title="上一个关键帧"><Icon name="prev" size={18} /></button>
+                      <button className={`kbtn ${keyAt.here != null ? 'on' : ''}`} disabled={busy} onClick={onToggleKey}
+                              title={keyAt.here != null ? '删除播放头这里的关键帧' : '在播放头这里加一个关键帧'}><i /></button>
+                      <button className="icon" disabled={busy || keyAt.next == null} onClick={onNextKey} title="下一个关键帧"><Icon name="next" size={18} /></button>
+                      <span className="keybar-text">{keyAt.here != null ? `第 ${keyAt.here + 1} 个关键帧，共 ${keys.length} 个` : `播放头不在关键帧上（共 ${keys.length} 个）`}</span>
+                    </div>
+                    <button className={`record ${recordArmed ? 'on' : ''}`} disabled={busy} onClick={onRecordArm}
+                            title="按下后在画面上按住贴纸拖动：视频慢速播放，你拖的路线会变成关键帧">
+                      <i className="rec-dot" />{recordArmed ? '在画面上按住贴纸拖动…（再点取消）' : '边播边拖，录一条路线'}
+                    </button>
+                  </div>
+                )}
                 <label className="slider-row">
                   <span>大小</span>
                   <input type="range" min="0.06" max="0.6" step="0.01" value={curSize} disabled={busy}
                          onChange={(e) => onSize(Number(e.target.value))} onPointerUp={onSizeCommit} onKeyUp={onSizeCommit} />
                   <b>{Math.round(curSize * 100)}%</b>
                 </label>
-                <p className="caption">{keys.length} 个关键帧（时间轴上的菱形）{local != null ? '' : ''}</p>
+                <p className="caption">{mode === 'still' ? '' : '大小也跟着关键帧变，中间平滑过渡。'}</p>
               </>
             ) : (
               <p className="caption">自动加的贴纸会跟着画面里的东西走。点预览画面上的位置，可以改成手动放在那里。</p>

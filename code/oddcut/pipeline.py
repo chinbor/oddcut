@@ -303,7 +303,7 @@ def _check_place(place: dict) -> dict:
     if not keys:
         raise ValueError("a placed sticker needs at least one keyframe")
     mode = place.get("mode", "follow")
-    if mode not in ("follow", "fixed"):
+    if mode not in ("follow", "path", "still", "fixed"):
         raise ValueError(f"unknown sticker mode {mode!r}")
     out = {"mode": mode, "keys": sorted(keys, key=lambda k: k["t"]), "in": max(0.0, float(place.get("in") or 0.0))}
     if place.get("out") is not None:

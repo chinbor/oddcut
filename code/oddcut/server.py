@@ -395,9 +395,28 @@ def plan_waveform(plan_path: Path) -> dict:
                     "on_beat": [bool(v) for v, g in zip(m.on_beat, m.grid) if g <= dur + 0.01]}
         except Exception:  # noqa: BLE001 - the waveform alone is still useful
             grid = {"t": [], "strength": [], "on_beat": []}
-    out["grid"] = grid
+    out["grid"] = {**grid, **_bars(grid)}
     out["tempo"] = round(pl.music.tempo, 1)
     return out
+
+
+def _bars(grid: dict) -> dict:
+    """Beat numbers and downbeats (重拍) for the timeline. Assumes 4 beats to the bar (pop / hip-hop): of the four
+    ways to group the full beats into bars, the one whose first beats hit hardest (mean onset strength) wins.
+    Half-beats (slow songs) get beat_no 0."""
+    on = grid.get("on_beat") or []
+    st = grid.get("strength") or []
+    full = [i for i, b in enumerate(on) if b]
+    if not full:
+        return {"beat_no": [0] * len(on), "downbeat": [False] * len(on), "bar": [0] * len(on)}
+    phase = max(range(4), key=lambda p: sum(st[i] for k, i in enumerate(full) if k % 4 == p) / max(1, len(full[p::4])))
+    beat_no, down, bar = [0] * len(on), [False] * len(on), [0] * len(on)
+    for k, i in enumerate(full):
+        beat_no[i] = k + 1
+        if k % 4 == phase:
+            down[i] = True
+        bar[i] = (k - phase) // 4 + 1 if k >= phase else 0      # 0 = pickup beats before the first bar
+    return {"beat_no": beat_no, "downbeat": down, "bar": bar}
 
 
 def run_edit(job: Job) -> dict:

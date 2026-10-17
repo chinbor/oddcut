@@ -7,19 +7,39 @@ const fmt = (t) => {
   return `${String(m).padStart(2, '0')}:${s.toFixed(1).padStart(4, '0')}`
 }
 
-// Centre of the editor: the preview (no native controls), our own transport bar, and direct manipulation of
-// the selected shot's sticker (drag to move, corners to resize; doing that at a new moment adds a keyframe).
+// Ramer-Douglas-Peucker on [t, x, y] samples (x, y in 0..1): keeps the corners of a recorded drag
+function rdp(pts, eps) {
+  if (pts.length < 3) return pts
+  const [a, b] = [pts[0], pts[pts.length - 1]]
+  let best = -1, idx = 0
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p = pts[i]
+    const u = (p[0] - a[0]) / Math.max(1e-6, b[0] - a[0])
+    const d = Math.hypot(p[1] - (a[1] + (b[1] - a[1]) * u), p[2] - (a[2] + (b[2] - a[2]) * u))
+    if (d > best) { best = d; idx = i }
+  }
+  if (best <= eps) return [a, b]
+  return [...rdp(pts.slice(0, idx + 1), eps).slice(0, -1), ...rdp(pts.slice(idx), eps)]
+}
+
+// Centre of the editor: the preview (no native controls), our transport bar, the beat indicator, and direct
+// manipulation of the selected shot's sticker: drag it to move, a corner to resize (a keyframe is added at the
+// playhead if there isn't one), keyframe dots on its path (click = select + jump there, drag = move,
+// right-click = menu), and 边播边拖 recording.
 export default function Viewer({ src, videoRef, time, onTime, playing, setPlaying, duration, fps, aspect, shot,
-                                 draft, track, stickerImage, autoSticker, onDraft, onCommit, onDropSticker,
-                                 boxMode, onBox, status }) {
+                                 draft, track, stickerImage, showImage, autoSticker, keySel, onSelectKey, onDraft,
+                                 onMoveKey, onCommit, onDeleteKey, onStillKey, onPlaceAuto, onDropSticker, recordArmed,
+                                 onRecorded, boxMode, onBox, status, wave }) {
   const boxRef = useRef(null)
   const [aw, ah] = aspect
   const keep = useRef({ t: 0, playing: false })
-  const [hint, setHint] = useState(() => { try { return !localStorage.getItem('oddcut.hint.sticker') } catch { return true } })
+  const [hint, setHint] = useState(() => { try { return !localStorage.getItem('oddcut.hint.sticker2') } catch { return true } })
   const [boxDraft, setBoxDraft] = useState(null)
+  const [menu, setMenu] = useState(null)          // right-click menu on a keyframe: {j, x, y}
+  const [help, setHelp] = useState(false)
+  const [rec, setRec] = useState(null)            // live recorded points while 边播边拖
 
-  // Two stacked <video> layers: a new preview file (an edit, or an effect filled in) loads in the back one,
-  // seeks to the same moment, and only then comes to the front, so there is no black flash on a swap.
+  // ---- two stacked <video> layers: a new file loads behind, seeks to the same moment, then swaps in
   const [layers, setLayers] = useState([null, null])
   const [front, setFront] = useState(0)
   const vids = [useRef(null), useRef(null)]
@@ -37,7 +57,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
   }
   const onSeekedLayer = (i) => (e) => {
     const v = e.currentTarget
-    if (i !== front && layers[i] === src) {           // the new file is ready at the right moment: swap
+    if (i !== front && layers[i] === src) {
       const old = vids[front].current
       if (keep.current.playing || (old && !old.paused)) v.play().catch(() => {})
       if (old) old.pause()
@@ -46,7 +66,6 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     }
     if (i === front && !playing) onTime(v.currentTime)
   }
-  // scrubbing from the timeline moves the video
   useEffect(() => {
     const v = videoRef.current
     if (v && !playing && Math.abs(v.currentTime - time) > 0.02) v.currentTime = time
@@ -59,11 +78,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     return () => cancelAnimationFrame(id)
   }, [playing])
 
-  const toggle = () => {
-    const v = videoRef.current
-    if (!v) return
-    v.paused ? v.play() : v.pause()
-  }
+  const toggle = () => { const v = videoRef.current; if (v) (v.paused ? v.play() : v.pause()) }
   const step = (n) => {
     const v = videoRef.current
     if (v && !v.paused) v.pause()
@@ -80,27 +95,37 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  // ---- sticker on the selected shot
+  // ---- beat indicator: pulses on every beat, harder on downbeats
+  const beats = wave?.grid?.t || []
+  let lastBeat = -1
+  for (let i = 0; i < beats.length && beats[i] <= time + 1e-3; i++) lastBeat = i
+  const age = lastBeat >= 0 ? time - beats[lastBeat] : 9
+  const strong = lastBeat >= 0 && wave.grid.downbeat?.[lastBeat]
+  const pulse = Math.max(0, 1 - age / 0.22)
+
+  // ---- sticker of the selected shot
   const local = shot ? time - shot.t_start : -1
   const inShot = shot && local >= 0 && local < shot.t_end - shot.t_start
   const f = track ? Math.min(track.frames - 1, Math.max(0, Math.round(local * track.fps))) : 0
   const tIn = draft?.in || 0
   const tOut = draft?.out ?? (shot ? shot.t_end - shot.t_start : 0)
-  const showSticker = draft && track && inShot && local >= tIn && local < tOut
+  const visible = draft && track && inShot && local >= tIn && local < tOut
   const rect = () => boxRef.current.getBoundingClientRect()
   const norm = (e) => { const r = rect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))] }
   const minSidePx = () => { const r = rect(); return Math.min(r.width, r.height) }
-  const dismissHint = () => { setHint(false); try { localStorage.setItem('oddcut.hint.sticker', '1') } catch {} }
+  const dismissHint = () => { setHint(false); try { localStorage.setItem('oddcut.hint.sticker2', '1') } catch {} }
 
-  const drag = (e, move) => {
+  const drag = (e, move, done = onCommit) => {
     e.preventDefault()
     e.stopPropagation()
     const mv = (ev) => move(ev)
-    const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); onCommit() }
+    const up = (ev) => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); done(ev) }
     window.addEventListener('pointermove', mv)
     window.addEventListener('pointerup', up)
   }
-  const moveSticker = (e) => {
+  const onStickerDown = (e) => {
+    if (e.button !== 0) return
+    if (recordArmed) return startRecording(e)
     const [x0, y0] = norm(e)
     const cx = track.x[f], cy = track.y[f]
     drag(e, (ev) => { const [x, y] = norm(ev); onDraft({ x: cx + (x - x0), y: cy + (y - y0) }) })
@@ -113,9 +138,57 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
       onDraft({ size: Math.min(0.6, Math.max(0.06, side / minSidePx())) })
     })
   }
-  // clicking empty picture: a sticker being edited jumps there (keyframe at this moment); an auto sticker
-  // becomes a hand-placed one at that spot
+  const onKeyDown = (e, j, k) => {
+    setMenu(null)
+    if (e.button === 2) return
+    onSelectKey(j)
+    onTime(shot.t_start + k.t + 0.001)
+    let moved = false
+    drag(e, (ev) => { moved = true; const [x, y] = norm(ev); onMoveKey(j, x, y) }, () => { if (moved) onCommit() })
+  }
+
+  // 边播边拖: hold the sticker, playback runs at half speed, the drag is recorded and thinned into keyframes
+  const startRecording = (e) => {
+    const v = videoRef.current
+    if (!v) return
+    e.preventDefault(); e.stopPropagation()
+    const pts = []
+    let last = norm(e)
+    const sample = () => {
+      const lt = v.currentTime - shot.t_start
+      if (lt >= 0 && lt <= tOut) pts.push([lt, last[0], last[1]])
+      setRec([...pts])
+    }
+    sample()
+    v.playbackRate = 0.5
+    v.play().catch(() => {})
+    let id = requestAnimationFrame(function loop() {
+      sample()
+      if (v.currentTime - shot.t_start >= tOut - 0.01) return stop()
+      id = requestAnimationFrame(loop)
+    })
+    const mv = (ev) => { last = norm(ev) }
+    const stop = () => {
+      cancelAnimationFrame(id)
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', stop)
+      v.pause(); v.playbackRate = 1
+      setRec(null)
+      if (pts.length < 2) return
+      // one point every ~0.25 s, then drop the ones a straight line already explains
+      const t0 = pts[0][0], t1 = pts[pts.length - 1][0]
+      const grid = []
+      for (let t = t0; t < t1; t += 0.25) grid.push(pts.reduce((b, p) => (Math.abs(p[0] - t) < Math.abs(b[0] - t) ? p : b)))
+      grid.push(pts[pts.length - 1])
+      const keys = rdp(grid, 0.012).map(([t, x, y]) => ({ t: Math.round(t * fps) / fps, x, y }))
+      onRecorded(keys, t0, t1)
+    }
+    window.addEventListener('pointermove', mv)
+    window.addEventListener('pointerup', stop)
+  }
+
   const onSurface = (e) => {
+    setMenu(null)
+    if (e.button !== 0) return
     if (boxMode) {
       const [x0, y0] = norm(e)
       let b = [x0, y0, x0, y0]
@@ -125,20 +198,21 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
       window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
       return
     }
-    if (!inShot || !(draft || autoSticker)) return
-    const [x, y] = norm(e)
-    onDraft({ x, y })
-    drag(e, (ev) => { const [x2, y2] = norm(ev); onDraft({ x: x2, y: y2 }) })
+    if (autoSticker && !draft && inShot) onPlaceAuto(...norm(e))   // an auto sticker becomes a hand-placed one there
   }
 
-  const pts = track && draft ? track.x.slice(Math.round(tIn * track.fps), Math.round(tOut * track.fps) + 1)
-    .map((x, k) => `${(x * 100).toFixed(2)},${(track.y[Math.round(tIn * track.fps) + k] * 100).toFixed(2)}`).join(' ') : ''
-  const side = showSticker ? track.size[f] * Math.min(aw, ah) : 0
+  // path: whole shot, played part solid, the rest dashed; tracked paths (跟着物体) drawn thinner
+  const pts = (a, b) => track.x.slice(a, b + 1).map((x, k) => `${(x * 100).toFixed(2)},${(track.y[a + k] * 100).toFixed(2)}`).join(' ')
+  const showPath = draft && track && inShot && draft.mode !== 'still'
+  const i0 = track ? Math.round(tIn * track.fps) : 0
+  const i1 = track ? Math.min(track.frames - 1, Math.round(tOut * track.fps)) : 0
+  const side = visible ? track.size[f] * Math.min(aw, ah) : 0
 
   return (
     <div className="viewer">
       <div className="stage-box">
         <div className="frame" ref={boxRef} style={{ aspectRatio: `${aw} / ${ah}`, '--ar': aw / ah }}
+             onContextMenu={(e) => e.preventDefault()}
              onDragOver={(e) => { if (e.dataTransfer.types.includes('application/x-oddcut-sticker')) e.preventDefault() }}
              onDrop={(e) => { const id = e.dataTransfer.getData('application/x-oddcut-sticker'); if (id) { e.preventDefault(); onDropSticker(id, ...norm(e)) } }}>
           {[0, 1].map((i) => layers[i] && (
@@ -148,30 +222,64 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
                    onEnded={() => i === front && setPlaying(false)} />
           ))}
           {!layers[front] && <div className="frame-empty">{status || '正在准备预览…'}</div>}
-          <div className={`surface ${boxMode ? 'box-mode' : (draft || autoSticker) && inShot ? 'place-mode' : ''}`} onPointerDown={onSurface}>
-            {draft && pts && inShot && (
-              <svg viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={pts} /></svg>
+
+          <div className={`surface ${boxMode ? 'box-mode' : autoSticker && !draft && inShot ? 'place-mode' : ''}`} onPointerDown={onSurface}>
+            {showPath && (
+              <svg viewBox="0 0 100 100" preserveAspectRatio="none" className={draft.mode === 'follow' ? 'tracked' : 'drawn-path'}>
+                <polyline className="past" points={pts(i0, Math.max(i0, Math.min(f, i1)))} />
+                <polyline className="future" points={pts(Math.max(i0, Math.min(f, i1)), i1)} />
+              </svg>
             )}
+            {rec && <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="recording"><polyline points={rec.map((p) => `${p[1] * 100},${p[2] * 100}`).join(' ')} /></svg>}
             {draft && inShot && draft.keys.map((k, j) => (
-              <i key={j} className={`kdot ${Math.abs(k.t - local) < 0.5 / (track?.fps || 30) ? 'now' : ''}`}
-                 style={{ left: `${k.x * 100}%`, top: `${k.y * 100}%` }} />
+              <i key={j} className={`kdot ${keySel === j ? 'sel' : ''} ${Math.abs(k.t - local) < 0.5 / fps ? 'now' : ''}`}
+                 style={{ left: `${k.x * 100}%`, top: `${k.y * 100}%` }} title={`第 ${j + 1} 个关键帧 · ${k.t.toFixed(2)} 秒（拖动调位置，右键更多）`}
+                 onPointerDown={(e) => onKeyDown(e, j, k)}
+                 onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); const r = rect(); onSelectKey(j); setMenu({ j, x: e.clientX - r.left, y: e.clientY - r.top }) }} />
             ))}
-            {showSticker && (
-              <div className="sel-box" onPointerDown={moveSticker}
+            {visible && !rec && (
+              <div className={`sel-box ${recordArmed ? 'armed' : ''}`} onPointerDown={onStickerDown}
                    style={{ left: `${track.x[f] * 100}%`, top: `${track.y[f] * 100}%`, width: `${(side / aw) * 100}%`, height: `${(side / ah) * 100}%` }}>
-                {stickerImage && <img src={stickerImage} alt="" draggable={false} />}
-                {['nw', 'ne', 'sw', 'se'].map((c) => <i key={c} className={`corner ${c}`} onPointerDown={resize} />)}
+                {showImage && stickerImage && <img src={stickerImage} alt="" draggable={false} />}
+                {!recordArmed && ['nw', 'ne', 'sw', 'se'].map((c) => <i key={c} className={`corner ${c}`} onPointerDown={resize} />)}
               </div>
             )}
             {boxDraft && (
               <i className="subject-box" style={{ left: `${boxDraft[0] * 100}%`, top: `${boxDraft[1] * 100}%`,
                                                  width: `${(boxDraft[2] - boxDraft[0]) * 100}%`, height: `${(boxDraft[3] - boxDraft[1]) * 100}%` }} />
             )}
+            {menu && (
+              <div className="kmenu" style={{ left: menu.x, top: menu.y }} onPointerDown={(e) => e.stopPropagation()}>
+                <button onClick={() => { setMenu(null); onDeleteKey(menu.j) }}><Icon name="trash" size={16} />删除这个关键帧</button>
+                <button onClick={() => { setMenu(null); onStillKey(menu.j) }}><Icon name="check" size={16} />设为停在这里</button>
+              </div>
+            )}
           </div>
+
+          <div className={`beat-badge ${playing ? 'live' : ''}`}>
+            <i className={`beat-dot ${strong ? 'strong' : ''}`} style={{ transform: `scale(${1 + pulse * (strong ? 0.9 : 0.45)})`, opacity: 0.45 + 0.55 * pulse }} />
+            <span>{wave?.tempo ? `${Math.round(wave.tempo)} BPM` : '节拍'}</span>
+            <button className="help" onClick={() => setHelp((h) => !h)} title="什么是卡点？">?</button>
+          </div>
+          {help && (
+            <div className="beat-help" onPointerDown={(e) => e.stopPropagation()}>
+              <div className="bh-head"><b>什么是卡点</b><button className="icon" onClick={() => setHelp(false)}><Icon name="close" size={14} /></button></div>
+              <svg viewBox="0 0 240 70" className="bh-diagram">
+                {Array.from({ length: 48 }, (_, i) => <rect key={i} x={i * 5} y={38 - (6 + ((i * 37) % 17))} width="3" height={2 * (6 + ((i * 37) % 17))} className="wv" />)}
+                {Array.from({ length: 8 }, (_, i) => <rect key={`b${i}`} x={10 + i * 30} y="0" width={i % 4 === 0 ? 2.5 : 1.5} height={i % 4 === 0 ? 12 : 7} className={i % 4 === 0 ? 'down' : 'beat'} />)}
+                <line className="cutline" x1="0" y1="2" x2="0" y2="68" />
+              </svg>
+              <p>音乐里有规律的鼓点叫<b>节拍</b>，每 4 拍里最重的那一下是<b>重拍</b>。</p>
+              <p>Oddcut 会把镜头切换放在节拍上，重要的镜头（手绘变回实拍）放在重拍上。</p>
+              <p>你拖切点时会自动吸到最近的节拍；时间轴上绿点 = 这个切点踩在拍上。</p>
+            </div>
+          )}
+
           {boxMode && <span className="frame-tip">在画面上框出要画的东西</span>}
-          {!boxMode && autoSticker && !draft && inShot && <span className="frame-tip">自动加的贴纸：点画面上的位置，改成手动放在那里</span>}
-          {!boxMode && draft && inShot && hint && (
-            <span className="frame-tip dismiss">拖动贴纸移动，拖四角调大小。换个时刻再拖，会自动加关键帧
+          {!boxMode && recordArmed && visible && <span className="frame-tip">按住贴纸拖动，视频会慢速播放并记录路线；松开结束</span>}
+          {!boxMode && !recordArmed && autoSticker && !draft && inShot && <span className="frame-tip">自动加的贴纸：点画面上的位置，改成手动放在那里</span>}
+          {!boxMode && !recordArmed && draft && inShot && hint && (
+            <span className="frame-tip dismiss">拖贴纸移动、拖四角调大小，会在当前时刻自动加关键帧。白色菱形是关键帧，点它跳过去，拖它改位置，右键删除
               <button onClick={dismissHint} aria-label="知道了"><Icon name="close" size={14} /></button></span>
           )}
         </div>

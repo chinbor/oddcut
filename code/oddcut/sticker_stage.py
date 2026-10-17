@@ -223,44 +223,84 @@ def _flow_path(gray: list, start: int, end: int, x: float, y: float, r: int) -> 
     return path
 
 
+TRACK_HEIGHT = 640     # sticker paths are worked out at this size everywhere (editor overlay, preview, full
+                       # render) and scaled, so all three show the sticker in exactly the same place
+MODES = ("follow", "path", "still")   # 跟着物体 / 按我画的路线 / 停在原地 ("fixed" = old name of "path")
+
+
+def _catmull(ki: list[int], v: np.ndarray, T: int) -> np.ndarray:
+    """Smooth curve through the keyframe values (Catmull-Rom, held flat before the first / after the last)."""
+    out = np.empty(T, np.float32)
+    n = len(ki)
+    for f in range(T):
+        if f <= ki[0]:
+            out[f] = v[0]
+            continue
+        if f >= ki[-1]:
+            out[f] = v[-1]
+            continue
+        j = int(np.searchsorted(ki, f, side="right")) - 1
+        p0, p1, p2, p3 = v[max(0, j - 1)], v[j], v[j + 1], v[min(n - 1, j + 2)]
+        u = (f - ki[j]) / max(1, ki[j + 1] - ki[j])
+        out[f] = 0.5 * (2 * p1 + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u * u + (-p0 + 3 * p1 - 3 * p2 + p3) * u ** 3)
+    return out
+
+
 def sticker_path(frames: np.ndarray, fps: float, place: dict) -> tuple[np.ndarray, np.ndarray]:
-    """Per-frame centre (px) and size (px) of a placed sticker. `place` = {mode: follow | fixed,
-    keys: [{t: s from shot start, x, y (0..1 of the frame), size (share of the short side)}, ...]}.
-    fixed: positions interpolate between keyframes. follow: from every keyframe the point is tracked forward
-    to the next one (and back from the first to the shot start), so a corrected keyframe restarts the
-    track there. Sizes interpolate linearly either way."""
+    """Per-frame centre (px) and size (px) of a placed sticker. `place` = {mode, keys: [{t: s from shot start,
+    x, y (0..1 of the frame), size (share of the short side)}, ...]}.
+    follow (跟着物体): the point under the first keyframe is tracked through the shot (LK flow). A later keyframe
+        is a correction: the track gets there by spreading the difference over the stretch before it (no jump),
+        and carries on tracking from the corrected spot.
+    path (按我画的路线): a smooth curve through the keyframes, nothing tracked.
+    still (停在原地): the first keyframe's spot for the whole shot.
+    Sizes interpolate linearly between keyframes in every mode."""
     T, H, W, _ = frames.shape
+    mode = place.get("mode", "follow")
+    mode = "path" if mode == "fixed" else mode
     keys = sorted(place.get("keys") or [{"t": 0.0, "x": place.get("x", 0.5), "y": place.get("y", 0.5),
                                          "size": place.get("size", 0.22)}], key=lambda k: k["t"])
     ki = [int(np.clip(round(k["t"] * fps), 0, T - 1)) for k in keys]
+    for j in range(1, len(ki)):                    # two keys on one frame: keep them in order
+        ki[j] = max(ki[j], ki[j - 1])
     kx = np.array([k["x"] * W for k in keys], np.float32)
     ky = np.array([k["y"] * H for k in keys], np.float32)
     ks = np.array([k.get("size", 0.22) * min(W, H) for k in keys], np.float32)
     frame_idx = np.arange(T)
     sizes = np.interp(frame_idx, ki, ks)
-    if place.get("mode", "follow") != "follow":
-        return np.stack([np.interp(frame_idx, ki, kx), np.interp(frame_idx, ki, ky)], 1), sizes
+    if mode == "still":
+        return np.tile([kx[0], ky[0]], (T, 1)).astype(np.float32), sizes
+    if mode == "path":
+        if len(ki) == 1 or ki[-1] == ki[0]:
+            return np.tile([kx[0], ky[0]], (T, 1)).astype(np.float32), sizes
+        return np.stack([_catmull(ki, kx, T), _catmull(ki, ky, T)], 1), sizes
     gray = [cv2.cvtColor(f, cv2.COLOR_RGB2GRAY) for f in frames]
     r = int(0.08 * min(W, H))
     centers = np.zeros((T, 2), np.float32)
     if ki[0] > 0:
         centers[: ki[0] + 1] = _flow_path(gray, ki[0], 0, kx[0], ky[0], r)[::-1]
     for j, s in enumerate(ki):
-        e = ki[j + 1] if j + 1 < len(ki) else T - 1
+        last = j + 1 == len(ki)
+        e = T - 1 if last else ki[j + 1]
         if e > s:
-            centers[s:e + 1] = _flow_path(gray, s, e, kx[j], ky[j], r)
+            seg = _flow_path(gray, s, e, kx[j], ky[j], r)
+            if not last:                           # ease into the next keyframe instead of jumping onto it
+                err = np.array([kx[j + 1], ky[j + 1]], np.float32) - seg[-1]
+                seg = seg + err[None, :] * np.linspace(0, 1, len(seg), dtype=np.float32)[:, None]
+            centers[s:e + 1] = seg
         else:
             centers[s] = (kx[j], ky[j])
-        if j + 1 < len(ki):                  # the next keyframe is where the user put it, not where flow drifted
-            centers[e] = (kx[j + 1], ky[j + 1])
     from scipy.ndimage import gaussian_filter1d
-    return gaussian_filter1d(centers, 0.8, axis=0, mode="nearest"), sizes
+    sm = gaussian_filter1d(centers, 0.7, axis=0, mode="nearest")
+    for f, x, y in zip(ki, kx, ky):               # keyframes stay exactly where they were put
+        sm[f] = (x, y)
+    return sm, sizes
 
 
 _SHOT_FRAMES: dict = {}
 
 
-def shot_frames(path: str, src_start: float, dur: float, aspect: float, out_height: int = 360):
+def shot_frames(path: str, src_start: float, dur: float, aspect: float, out_height: int = TRACK_HEIGHT):
     """Frames of a shot, cropped to the output aspect and scaled to `out_height` (the timeline editor works on
     these to draw a sticker's path while it's being placed); the last few shots are kept in memory."""
     from .stickers import read_clip
@@ -286,14 +326,15 @@ def preview_path(path: str, src_start: float, dur: float, aspect: float, place: 
     frames, fps = shot_frames(path, src_start, dur, aspect)
     T, H, W, _ = frames.shape
     centers, sizes = sticker_path(frames, fps, place)
-    return {"fps": fps, "frames": T, "x": np.round(centers[:, 0] / W, 4).tolist(),
-            "y": np.round(centers[:, 1] / H, 4).tolist(), "size": np.round(sizes / min(W, H), 4).tolist()}
+    return {"fps": fps, "frames": T, "x": [round(float(v), 4) for v in centers[:, 0] / W],
+            "y": [round(float(v), 4) for v in centers[:, 1] / H], "size": [round(float(v), 4) for v in sizes / min(W, H)]}
 
 
 def render_manual_sticker(path: str, src_start: float, dur: float, sticker: str, place: dict, out: Path,
                           aspect: float, out_height: int | None = None) -> bool:
     """A sticker the user placed (see sticker_path); `place` may also carry `in` / `out` (seconds from the
-    shot start) for when it pops in and out. With `out_height` the work happens at that (preview) size."""
+    shot start) for when it pops in and out. With `out_height` the work happens at that (preview) size.
+    The path comes from the same TRACK_HEIGHT frames as the editor overlay, scaled to this size."""
     from .cartoons import NAMES as CARTOONS
     from .cartoons import cartoon_frame
     from .stickers import composite, presence, read_clip, sticker_frame, write_clip
@@ -307,7 +348,13 @@ def render_manual_sticker(path: str, src_start: float, dur: float, sticker: str,
         ow = int(round(cw * out_height / ch)) // 2 * 2
         frames = np.stack([cv2.resize(f, (ow, out_height), interpolation=cv2.INTER_AREA) for f in frames])
         T, ch, cw = len(frames), out_height, ow
-    centers, sizes = sticker_path(frames, fps, place)
+    p = preview_path(path, src_start, dur, aspect, place)
+    n = min(T, p["frames"])
+    xs, ys, ss = np.array(p["x"][:n]), np.array(p["y"][:n]), np.array(p["size"][:n])
+    if n < T:                                # a frame more decoded here: hold the last position
+        xs, ys, ss = (np.concatenate([a, np.full(T - n, a[-1])]) for a in (xs, ys, ss))
+    centers = np.stack([xs * cw, ys * ch], 1)
+    sizes = ss * min(cw, ch)
     sid = sticker.partition("@")[0]
     t_in = float(place.get("in") or 0.0) + APPEAR
     t_out = place.get("out")

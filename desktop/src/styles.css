@@ -176,9 +176,6 @@ button.huge { height: 52px; font-size: 16px; justify-content: center; border-rad
 .surface.place-mode { cursor: crosshair; }
 .surface.box-mode { cursor: crosshair; background: rgba(0,0,0,.18); }
 .surface svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-.surface polyline { fill: none; stroke: var(--sticker); stroke-width: 2px; vector-effect: non-scaling-stroke; stroke-dasharray: 6 4; filter: drop-shadow(0 0 1px #000); }
-.kdot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; background: #fff; border: 2px solid var(--sticker); transform: rotate(45deg); pointer-events: none; }
-.kdot.now { background: var(--sticker); border-color: #fff; }
 .sel-box { position: absolute; transform: translate(-50%, -50%); outline: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.5); cursor: move; }
 .sel-box img { width: 100%; height: 100%; object-fit: contain; pointer-events: none; display: block; }
 .sel-box .corner { position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid var(--sticker); border-radius: 3px; }
@@ -290,3 +287,86 @@ button.huge { height: 52px; font-size: 16px; justify-content: center; border-rad
 .toast span { flex: 1; }
 .toast button { padding: 5px 10px; font-size: 12.5px; flex: none; }
 .toast button.icon { padding: 4px; }
+
+/* ---------------------------------------------------------------- sticker path on the picture */
+.surface svg polyline { fill: none; stroke-width: 2.5px; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 1.5px rgba(0,0,0,.9)); }
+.surface svg.drawn-path polyline { stroke: var(--sticker); }
+.surface svg.drawn-path polyline.future { stroke-dasharray: 7 5; opacity: .85; }
+.surface svg.tracked polyline { stroke: #7fe0c0; stroke-width: 1.5px; }
+.surface svg.tracked polyline.future { stroke-dasharray: 2 4; opacity: .8; }
+.surface svg.recording polyline { stroke: var(--bad); stroke-width: 3px; }
+.kdot { position: absolute; z-index: 2; width: 14px; height: 14px; margin: -7px 0 0 -7px; background: #fff; border: 2px solid var(--sticker); transform: rotate(45deg); cursor: grab; box-shadow: 0 0 0 1px rgba(0,0,0,.5); transition: transform .1s; }
+.kdot:hover { transform: rotate(45deg) scale(1.25); }
+.kdot.now { background: var(--sticker); border-color: #fff; }
+.kdot.sel { background: var(--accent); border-color: #fff; transform: rotate(45deg) scale(1.3); }
+.sel-box { z-index: 1; }
+.sel-box.armed { outline: 2px dashed var(--bad); cursor: grab; animation: armed 1s ease-in-out infinite; }
+@keyframes armed { 50% { outline-color: rgba(255,107,107,.35); } }
+.kmenu { position: absolute; z-index: 10; min-width: 170px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 10px; padding: 4px; box-shadow: 0 10px 28px rgba(0,0,0,.5); }
+.kmenu button { width: 100%; border: none; background: transparent; padding: 7px 10px; font-size: 13px; border-radius: 7px; }
+.kmenu button:hover { background: var(--raised-2); }
+
+/* beat indicator + 什么是卡点 */
+.beat-badge { position: absolute; top: 10px; right: 10px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 12px; border-radius: 16px; background: rgba(18,19,23,.78); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.beat-dot { width: 9px; height: 9px; border-radius: 50%; background: #c8cdd6; display: block; transition: transform .05s linear; }
+.beat-dot.strong { background: var(--accent); }
+.beat-badge .help { width: 22px; height: 22px; padding: 0; justify-content: center; border-radius: 50%; font-size: 12px; font-weight: 700; background: var(--raised-2); border-color: transparent; }
+.beat-help { position: absolute; top: 46px; right: 10px; z-index: 12; width: 290px; padding: 12px 14px; border-radius: 12px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 12px 32px rgba(0,0,0,.5); font-size: 13px; line-height: 1.55; }
+.beat-help p { margin: 6px 0 0; color: var(--muted); }
+.beat-help p b { color: var(--text); font-weight: 600; }
+.bh-head { display: flex; align-items: center; justify-content: space-between; }
+.bh-head button { padding: 3px; }
+.bh-diagram { width: 100%; height: 70px; margin-top: 8px; background: #17181c; border-radius: 8px; }
+.bh-diagram .wv { fill: #4a505c; }
+.bh-diagram .beat { fill: #8a91a0; }
+.bh-diagram .down { fill: var(--accent); }
+.bh-diagram .cutline { stroke: #fff; stroke-width: 2; animation: bh-cut 2.4s steps(1, end) infinite; }
+@keyframes bh-cut { 0% { transform: translateX(11px); } 25% { transform: translateX(41px); } 50% { transform: translateX(71px); } 75% { transform: translateX(131px); } }
+
+/* properties: 怎么动 / 关键帧 */
+.field { display: flex; flex-direction: column; gap: 8px; }
+.field-label { font-size: 12.5px; color: var(--muted); }
+.segmented.three { grid-template-columns: repeat(3, 1fr); }
+.segmented.three button { padding: 7px 4px; font-size: 13px; white-space: nowrap; }
+.keybar { display: flex; align-items: center; gap: 4px; }
+.keybar .icon { width: 32px; height: 32px; justify-content: center; }
+.kbtn { width: 34px; height: 32px; padding: 0; justify-content: center; }
+.kbtn i { width: 11px; height: 11px; border: 2px solid var(--muted); transform: rotate(45deg); display: block; }
+.kbtn.on i { background: var(--sticker); border-color: #fff; }
+.keybar-text { margin-left: 6px; font-size: 12.5px; color: var(--muted); }
+button.record { justify-content: center; font-size: 13px; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: block; }
+button.record.on { border-color: var(--bad); background: #3a1f22; }
+button.record.on .rec-dot { animation: armed 1s ease-in-out infinite; box-shadow: 0 0 0 3px rgba(255,107,107,.3); }
+
+/* timeline: zoom, beats, cuts */
+.zoom-btns { display: inline-flex; align-items: center; gap: 2px; }
+.zoom-btns .icon { width: 30px; height: 30px; justify-content: center; font-size: 18px; line-height: 1; }
+.zoom-btns .fit { padding: 4px 10px; font-size: 12.5px; margin-left: 4px; }
+.zoom-note { position: absolute; top: 40px; z-index: 8; transform: translateX(-50%); padding: 4px 12px; border-radius: 14px; background: rgba(0,0,0,.8); font-size: 13px; pointer-events: none; font-variant-numeric: tabular-nums; }
+.legend { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.legend i + i, .legend i:not(:first-child) { margin-left: 8px; }
+.lg-on, .cut-dot.on { background: var(--ok); }
+.lg-off, .cut-dot { border: 1.5px solid #c8cdd6; background: transparent; }
+.cut-dot.on { border-color: var(--ok); }
+.tl-ruler .bar-no { position: absolute; top: 3px; margin-left: -8px; min-width: 16px; padding: 0 3px; height: 16px; line-height: 16px; border-radius: 4px; background: #3a2a22; color: var(--accent); font-size: 10.5px; text-align: center; font-weight: 600; pointer-events: none; }
+.tl-ruler .tick { padding-left: 4px; }
+.beat-lines { position: absolute; top: 26px; bottom: 0; left: 0; right: 0; pointer-events: none; z-index: 2; }
+.bl { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,.07); transition: background .1s; }
+.bl.half { background: rgba(255,255,255,.03); }
+.bl.down { background: rgba(255,138,92,.28); }
+.bl.hot { background: rgba(255,255,255,.3); }
+.bl.down.hot { background: rgba(255,138,92,.6); }
+.bl.target { background: var(--ok); width: 2px; margin-left: -.5px; box-shadow: 0 0 6px var(--ok); }
+.bl.dim { background: rgba(255,255,255,.04); box-shadow: none; }
+.cut { width: 10px; }
+.cut-dot { position: absolute; left: 1px; bottom: -6px; width: 8px; height: 8px; border-radius: 50%; display: block; box-sizing: border-box; pointer-events: none; }
+.cut.dragging::after { background: #fff; }
+.cut-ghost.snapped { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.cut-ghost.snapped span { background: var(--ok); color: #0f2a20; display: inline-flex; align-items: center; gap: 4px; animation: magnet .22s ease-out; }
+.cut-ghost.free { background: #fff; opacity: .85; }
+@keyframes magnet { 0% { transform: translateX(-6px) scale(.9); } 60% { transform: translateX(2px) scale(1.06); } 100% { transform: none; } }
+.bar .diamond:hover { transform: rotate(45deg) scale(1.25); }
+.bar .diamond.sel { background: var(--accent); border-color: #fff; }
+@media (max-height: 700px) { .beat-lines { top: 22px; } }
