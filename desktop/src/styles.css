@@ -429,10 +429,13 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .fx-card { width: 100%; flex-direction: column; align-items: stretch; gap: 8px; padding: 8px; border-radius: 12px; text-align: left; }
 .fx-card.on { border-color: #4fc79a; background: #18271f; }
 .fx-demo { position: relative; height: 92px; border-radius: 8px; overflow: hidden; background: #0c0d10; display: block; }
-.fx-demo i { display: block; position: absolute; left: 0; right: 0; bottom: 0; animation: grow-rise 2.4s cubic-bezier(.22, .9, .3, 1) infinite; transform: translateY(110%); }
-.fx-demo .g1 { height: 34%; background: linear-gradient(#c9a26b, #8a6a3e); clip-path: polygon(0 30%, 18% 10%, 35% 25%, 55% 0, 75% 20%, 100% 8%, 100% 100%, 0 100%); animation-delay: 0s; }
-.fx-demo .g2 { height: 70%; background: linear-gradient(#5d6f86, #3b4659); clip-path: polygon(0 40%, 10% 40%, 10% 15%, 22% 15%, 22% 35%, 38% 35%, 38% 0, 50% 0, 50% 30%, 66% 30%, 66% 12%, 80% 12%, 80% 38%, 100% 38%, 100% 100%, 0 100%); animation-delay: .35s; }
-.fx-demo .g3 { height: 100%; background: linear-gradient(#f2b37a, #7fa4d6); animation-delay: .7s; }
+.fx-demo i { display: block; position: absolute; left: 0; right: 0; bottom: 0; }
+.fx-card:hover .fx-demo i { animation: grow-rise 2.4s cubic-bezier(.22, .9, .3, 1) infinite; }
+.fx-demo .g1 { height: 34%; background: linear-gradient(#c9a26b, #8a6a3e); clip-path: polygon(0 30%, 18% 10%, 35% 25%, 55% 0, 75% 20%, 100% 8%, 100% 100%, 0 100%); }
+.fx-demo .g2 { height: 70%; background: linear-gradient(#5d6f86, #3b4659); clip-path: polygon(0 40%, 10% 40%, 10% 15%, 22% 15%, 22% 35%, 38% 35%, 38% 0, 50% 0, 50% 30%, 66% 30%, 66% 12%, 80% 12%, 80% 38%, 100% 38%, 100% 100%, 0 100%); }
+.fx-card:hover .fx-demo .g2 { animation-delay: .35s; }
+.fx-demo .g3 { height: 100%; background: linear-gradient(#f2b37a, #7fa4d6); }
+.fx-card:hover .fx-demo .g3 { animation-delay: .7s; }
 @keyframes grow-rise { 0% { transform: translateY(110%); filter: blur(3px); } 12% { filter: blur(0); } 18%, 80% { transform: translateY(0); } 92%, 100% { transform: translateY(0); opacity: 0; } }
 .fx-text { display: flex; flex-direction: column; gap: 3px; }
 .fx-text b { display: flex; align-items: center; gap: 8px; font-size: 14px; }
