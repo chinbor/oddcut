@@ -87,6 +87,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
   useEffect(() => {
     const onKey = (e) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return
+      if (e.key === 'Escape') setMenu(null)
       if (e.code === 'Space') { e.preventDefault(); toggle() }
       if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1) }
       if (e.key === 'ArrowRight') { e.preventDefault(); step(1) }
@@ -211,6 +212,25 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
   return (
     <div className="viewer">
       <div className="stage-box">
+        <div className={`beat-badge ${playing ? 'live' : ''}`}>
+          <i className={`beat-dot ${strong ? 'strong' : ''}`} style={{ transform: `scale(${1 + pulse * (strong ? 0.9 : 0.45)})`, opacity: 0.45 + 0.55 * pulse }} />
+          <span>{wave?.tempo ? `${Math.round(wave.tempo)} BPM` : '节拍'}</span>
+          <button className="help" onClick={() => setHelp((h) => !h)} title="什么是卡点？">?</button>
+        </div>
+        {help && (
+          <div className="beat-help" onPointerDown={(e) => e.stopPropagation()}>
+            <div className="bh-head"><b>什么是卡点</b><button className="icon" onClick={() => setHelp(false)}><Icon name="close" size={14} /></button></div>
+            <svg viewBox="0 0 240 70" className="bh-diagram">
+              {Array.from({ length: 48 }, (_, i) => <rect key={i} x={i * 5} y={38 - (6 + ((i * 37) % 17))} width="3" height={2 * (6 + ((i * 37) % 17))} className="wv" />)}
+              {Array.from({ length: 8 }, (_, i) => <rect key={`b${i}`} x={10 + i * 30} y="0" width={i % 4 === 0 ? 2.5 : 1.5} height={i % 4 === 0 ? 12 : 7} className={i % 4 === 0 ? 'down' : 'beat'} />)}
+              <line className="cutline" x1="0" y1="2" x2="0" y2="68" />
+            </svg>
+            <p>音乐里有规律的鼓点叫<b>节拍</b>，每 4 拍里最重的那一下是<b>重拍</b>。</p>
+            <p>Oddcut 会把镜头切换放在节拍上，重要的镜头（手绘变回实拍）放在重拍上。</p>
+            <p>你拖切点时会自动吸到最近的节拍；时间轴上绿点 = 这个切点踩在拍上。</p>
+          </div>
+        )}
+
         <div className="frame" ref={boxRef} style={{ aspectRatio: `${aw} / ${ah}`, '--ar': aw / ah }}
              onContextMenu={(e) => e.preventDefault()}
              onDragOver={(e) => { if (e.dataTransfer.types.includes('application/x-oddcut-sticker')) e.preventDefault() }}
@@ -255,25 +275,6 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
               </div>
             )}
           </div>
-
-          <div className={`beat-badge ${playing ? 'live' : ''}`}>
-            <i className={`beat-dot ${strong ? 'strong' : ''}`} style={{ transform: `scale(${1 + pulse * (strong ? 0.9 : 0.45)})`, opacity: 0.45 + 0.55 * pulse }} />
-            <span>{wave?.tempo ? `${Math.round(wave.tempo)} BPM` : '节拍'}</span>
-            <button className="help" onClick={() => setHelp((h) => !h)} title="什么是卡点？">?</button>
-          </div>
-          {help && (
-            <div className="beat-help" onPointerDown={(e) => e.stopPropagation()}>
-              <div className="bh-head"><b>什么是卡点</b><button className="icon" onClick={() => setHelp(false)}><Icon name="close" size={14} /></button></div>
-              <svg viewBox="0 0 240 70" className="bh-diagram">
-                {Array.from({ length: 48 }, (_, i) => <rect key={i} x={i * 5} y={38 - (6 + ((i * 37) % 17))} width="3" height={2 * (6 + ((i * 37) % 17))} className="wv" />)}
-                {Array.from({ length: 8 }, (_, i) => <rect key={`b${i}`} x={10 + i * 30} y="0" width={i % 4 === 0 ? 2.5 : 1.5} height={i % 4 === 0 ? 12 : 7} className={i % 4 === 0 ? 'down' : 'beat'} />)}
-                <line className="cutline" x1="0" y1="2" x2="0" y2="68" />
-              </svg>
-              <p>音乐里有规律的鼓点叫<b>节拍</b>，每 4 拍里最重的那一下是<b>重拍</b>。</p>
-              <p>Oddcut 会把镜头切换放在节拍上，重要的镜头（手绘变回实拍）放在重拍上。</p>
-              <p>你拖切点时会自动吸到最近的节拍；时间轴上绿点 = 这个切点踩在拍上。</p>
-            </div>
-          )}
 
           {boxMode && <span className="frame-tip">在画面上框出要画的东西</span>}
           {!boxMode && recordArmed && visible && <span className="frame-tip">按住贴纸拖动，视频会慢速播放并记录路线；松开结束</span>}

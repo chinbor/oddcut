@@ -19,13 +19,13 @@
   --bad: #ff6b6b;
   --lib-w: 300px;
   --props-w: 340px;
-  --tl-h: 296px;
+  --tl-h: 302px;
   color-scheme: dark;
 }
 @media (max-width: 1440px) { :root { --lib-w: 272px; --props-w: 320px; } }
 @media (max-width: 1250px) { :root { --lib-w: 240px; --props-w: 296px; } }
-@media (max-height: 820px) { :root { --tl-h: 256px; } }
-@media (max-height: 700px) { :root { --tl-h: 228px; } }
+@media (max-height: 820px) { :root { --tl-h: 262px; } }
+@media (max-height: 700px) { :root { --tl-h: 234px; } }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -167,7 +167,7 @@ button.huge { height: 52px; font-size: 16px; justify-content: center; border-rad
 
 /* ---------------------------------------------------------------- viewer */
 .viewer { grid-area: view; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
-.stage-box { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 16px 16px 8px; container-type: size; }
+.stage-box { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 16px 16px 8px; container-type: size; position: relative; }
 .frame { position: relative; width: min(100cqw, calc(100cqh * var(--ar, 0.5625))); background: #000; border-radius: 6px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
 .frame video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .frame video.back { visibility: hidden; }
@@ -231,9 +231,9 @@ button.huge { height: 52px; font-size: 16px; justify-content: center; border-rad
 .zoom input { width: 120px; }
 .tl-scroll { flex: 1; overflow-x: auto; overflow-y: auto; min-height: 0; scrollbar-gutter: stable; }
 .tl-inner { position: relative; min-height: 100%; }
-.tl-ruler { position: sticky; top: 0; z-index: 4; height: 26px; background: var(--panel); border-bottom: 1px solid var(--line); cursor: ew-resize; }
+.tl-ruler { position: sticky; top: 0; z-index: 4; height: 32px; background: var(--panel); border-bottom: 1px solid var(--line); cursor: ew-resize; }
 .tl-ruler .lab-pad { position: sticky; left: 0; display: block; width: 92px; height: 100%; background: var(--panel); z-index: 1; }
-.tl-ruler .tick { position: absolute; top: 0; height: 26px; border-left: 1px solid var(--line-2); padding: 5px 0 0 4px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.tl-ruler .tick { position: absolute; top: 0; height: 15px; border-left: 1px solid var(--line-2); padding: 1px 0 0 4px; font-size: 11px; line-height: 13px; color: var(--muted); white-space: nowrap; }
 .track { position: relative; border-bottom: 1px solid #23262d; }
 .track > label { position: sticky; left: 0; z-index: 3; display: flex; align-items: center; gap: 7px; width: 92px; height: 100%; padding-left: 14px; font-size: 13px; color: var(--muted); background: var(--panel); border-right: 1px solid var(--line); }
 .track.video { height: 70px; }
@@ -260,7 +260,7 @@ button.huge { height: 52px; font-size: 16px; justify-content: center; border-rad
 .bar .reveal { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #fff; }
 .bar .edge { position: absolute; top: -3px; bottom: -3px; width: 8px; background: #fff; border-radius: 3px; cursor: ew-resize; z-index: 3; }
 .bar .edge.l { left: -4px; } .bar .edge.r { right: -4px; }
-.cut-ghost { position: absolute; top: 26px; bottom: 0; width: 2px; margin-left: -1px; background: #fff; z-index: 6; pointer-events: none; }
+.cut-ghost { position: absolute; top: 32px; bottom: 0; width: 2px; margin-left: -1px; background: #fff; z-index: 6; pointer-events: none; }
 .cut-ghost span { position: absolute; top: 2px; left: 6px; font-size: 11px; white-space: nowrap; padding: 1px 6px; border-radius: 4px; background: #fff; color: #121317; }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--playhead); z-index: 5; cursor: ew-resize; }
 .playhead::before { content: ''; position: absolute; top: 0; left: -6px; border: 7px solid transparent; border-top: 9px solid var(--playhead); }
@@ -271,10 +271,10 @@ button.huge { height: 52px; font-size: 16px; justify-content: center; border-rad
   .track.music { height: 50px; }
 }
 @media (max-height: 700px) {
-  .tl-toolbar { height: 38px; } .tl-ruler, .tl-ruler .tick { height: 22px; } .tl-ruler .tick { padding-top: 3px; }
+  .tl-toolbar { height: 38px; } .tl-ruler { height: 28px; } .tl-ruler .bar-no { top: 14px; }
   .track.video { height: 52px; } .clip, .cut { top: 5px; height: 42px; }
   .track.bars { height: 30px; } .bar { top: 3px; height: 24px; font-size: 12px; }
-  .track.music { height: 40px; } .cut-ghost { top: 22px; }
+  .track.music { height: 40px; } .cut-ghost { top: 28px; }
 }
 
 /* ---------------------------------------------------------------- toasts */
@@ -350,9 +350,9 @@ button.record.on .rec-dot { animation: armed 1s ease-in-out infinite; box-shadow
 .lg-on, .cut-dot.on { background: var(--ok); }
 .lg-off, .cut-dot { border: 1.5px solid #c8cdd6; background: transparent; }
 .cut-dot.on { border-color: var(--ok); }
-.tl-ruler .bar-no { position: absolute; top: 3px; margin-left: -8px; min-width: 16px; padding: 0 3px; height: 16px; line-height: 16px; border-radius: 4px; background: #3a2a22; color: var(--accent); font-size: 10.5px; text-align: center; font-weight: 600; pointer-events: none; }
+.tl-ruler .bar-no { position: absolute; top: 17px; margin-left: -7px; min-width: 14px; padding: 0 3px; height: 13px; line-height: 13px; border-radius: 3px; background: #3a2a22; color: var(--accent); font-size: 9.5px; text-align: center; font-weight: 600; pointer-events: none; }
 .tl-ruler .tick { padding-left: 4px; }
-.beat-lines { position: absolute; top: 26px; bottom: 0; left: 0; right: 0; pointer-events: none; z-index: 2; }
+.beat-lines { position: absolute; top: 32px; bottom: 0; left: 0; right: 0; pointer-events: none; z-index: 2; }
 .bl { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,.07); transition: background .1s; }
 .bl.half { background: rgba(255,255,255,.03); }
 .bl.down { background: rgba(255,138,92,.28); }
@@ -369,4 +369,4 @@ button.record.on .rec-dot { animation: armed 1s ease-in-out infinite; box-shadow
 @keyframes magnet { 0% { transform: translateX(-6px) scale(.9); } 60% { transform: translateX(2px) scale(1.06); } 100% { transform: none; } }
 .bar .diamond:hover { transform: rotate(45deg) scale(1.25); }
 .bar .diamond.sel { background: var(--accent); border-color: #fff; }
-@media (max-height: 700px) { .beat-lines { top: 22px; } }
+@media (max-height: 700px) { .beat-lines { top: 28px; } }
