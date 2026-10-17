@@ -11,6 +11,10 @@ Cutting (no extra model):
             only the largest piece kept: one clean, complete silhouette per object; they rise together, first
     stuff   the ground below a seam along strong horizontal edges, the band of buildings / trees above it, the
             sky from the top of each column down (its lower edge is the skyline); a seam never cuts a thing
+With the depth model (assets/models/depth_anything_v2_small.onnx, Depth-Anything-V2-Small, Apache-2.0, run by
+OpenCV on the CPU, ~0.2 s a shot) the sky is the far region joined to the top, the seams also follow depth
+edges (building bases, treelines), and clearly nearer blobs YOLO doesn't know (a pole, a tree, a bench) become
+things too. Without the file everything works as before.
 A layer that rises behind things already in place carries, where those things are, a smeared copy of the
 picture (it reads as motion), so it never shows a hole or a sharp second copy of them while it moves. Things
 are followed through the rise with optical flow, so a moving subject stays one piece.
@@ -18,6 +22,7 @@ are followed through the rise with optical flow, so a moving subject stays one p
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 
 import cv2
@@ -67,6 +72,77 @@ def _instances(rgb: np.ndarray, imgsz: int = 480) -> list[np.ndarray]:
     return out
 
 
+_DEPTH: dict = {}
+_DEPTH_LOCK = threading.Lock()
+DEPTH_SIZE = 392                 # model input (a multiple of 14); 0.16 s on a laptop CPU
+
+
+def depth_map(rgb: np.ndarray) -> np.ndarray | None:
+    """Relative nearness of every pixel (0 far .. 1 near, at rgb's size) from Depth-Anything-V2-Small, or None
+    when the model file isn't there (or can't run)."""
+    from .paths import MODEL_DIR
+    path = MODEL_DIR / "depth_anything_v2_small.onnx"
+    with _DEPTH_LOCK:
+        if "net" not in _DEPTH:
+            try:
+                _DEPTH["net"] = cv2.dnn.readNetFromONNX(str(path)) if path.exists() else None
+            except cv2.error:
+                _DEPTH["net"] = None
+        net = _DEPTH["net"]
+        if net is None:
+            return None
+        x = cv2.resize(rgb, (DEPTH_SIZE, DEPTH_SIZE), interpolation=cv2.INTER_CUBIC).astype(np.float32) / 255
+        x = (x - np.float32([0.485, 0.456, 0.406])) / np.float32([0.229, 0.224, 0.225])
+        net.setInput(np.ascontiguousarray(x.transpose(2, 0, 1)[None]))
+        try:
+            d = net.forward().reshape(DEPTH_SIZE, DEPTH_SIZE)
+        except cv2.error:
+            return None
+    d = cv2.resize(d, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_LINEAR)
+    lo, hi = np.percentile(d, 2), np.percentile(d, 98)
+    return np.clip((d - lo) / max(1e-6, hi - lo), 0, 1).astype(np.float32)
+
+
+def _sky_from_depth(depth: np.ndarray, things: np.ndarray) -> np.ndarray | None:
+    """Skyline: per column, down from the top while the picture stays far away."""
+    h, w = depth.shape
+    far = (depth < 0.05) & ~things
+    run = np.zeros(w, int)
+    for x in range(w):
+        col = far[:, x]
+        bad = np.nonzero(~col)[0]
+        run[x] = bad[0] if len(bad) else h
+    line = np.array([np.median(run[max(0, x - 6):x + 7]) for x in range(w)])
+    if line.mean() < 0.06 * h or (line > 0.02 * h).mean() < 0.35:
+        return None
+    return np.clip(line, 0, 0.8 * h).astype(int)
+
+
+def _depth_things(depth: np.ndarray, things: list[np.ndarray]) -> list[np.ndarray]:
+    """Blobs clearly nearer than what is around them (a pole, a tree, a bench) that YOLO didn't find."""
+    h, w = depth.shape
+    k = max(3, int(0.12 * min(h, w)) | 1)
+    around = cv2.blur(depth, (k, k))
+    near = ((depth - around > 0.10) & (depth > 0.3)).astype(np.uint8)
+    near = cv2.morphologyEx(near, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    union = np.zeros((h, w), bool)
+    for m in things:
+        union |= m
+    n, lab, st, _ = cv2.connectedComponentsWithStats(near)
+    out = []
+    for i in range(1, n):
+        m = lab == i
+        area = m.mean()
+        if not (0.004 <= area <= 0.3 and (m & union).sum() < 0.3 * m.sum() and st[i, cv2.CC_STAT_HEIGHT] > 0.08 * h):
+            continue
+        bw_, bh_ = st[i, cv2.CC_STAT_WIDTH], st[i, cv2.CC_STAT_HEIGHT]
+        thick = cv2.distanceTransform(m.astype(np.uint8), cv2.DIST_L2, 3).max()
+        if m.sum() < 0.3 * bw_ * bh_ or thick < 0.02 * min(h, w):      # wires, grass blades, spokes: not things
+            continue
+        out.append(_fill_holes(m & ~union))
+    return out
+
+
 def _skyline(rgb: np.ndarray, things: np.ndarray) -> np.ndarray | None:
     """Per column, the row where the sky ends (0 = no sky there); None when the shot has no real sky."""
     h, w = rgb.shape[:2]
@@ -95,13 +171,16 @@ def _skyline(rgb: np.ndarray, things: np.ndarray) -> np.ndarray | None:
     return np.clip(line, 0, 0.8 * h).astype(int)
 
 
-def _seam(rgb: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
+def _seam(rgb: np.ndarray, lo: np.ndarray, hi: np.ndarray, depth: np.ndarray | None = None) -> np.ndarray:
     """A left-to-right path y(x) between rows lo(x)..hi(x) along the strongest horizontal edges (a horizon,
-    a kerb, the top of a field), moving at most 2 rows per column."""
+    a kerb, the top of a field) - and depth steps, when there is a depth map - moving at most 2 rows per column."""
     h, w = rgb.shape[:2]
     gray = cv2.GaussianBlur(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32), (0, 0), 1.5)
     e = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
-    e = e / (e.max() + 1e-6)
+    e = e / (np.percentile(e, 99.5) + 1e-6)
+    if depth is not None:
+        dz = np.abs(cv2.Sobel(cv2.GaussianBlur(depth, (0, 0), 1.0), cv2.CV_32F, 0, 1, ksize=3))
+        e = np.minimum(e, 1.0) + 1.5 * np.minimum(dz / (np.percentile(dz, 99.5) + 1e-6), 1.0)
     rows = np.arange(h)[:, None]
     e = np.where((rows >= lo[None, :]) & (rows <= hi[None, :]), e, -1.0)
     acc = e[:, 0].copy()
@@ -190,26 +269,30 @@ def _flow_masks(prev_rgb: np.ndarray, rgb: np.ndarray, masks: list[np.ndarray]) 
     h, w = g0.shape
     gx, gy = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
     mx, my = gx + flow[..., 0], gy + flow[..., 1]
-    return [cv2.remap(m.astype(np.float32), mx, my, cv2.INTER_LINEAR) > 0.5 for m in masks]
+    moved = [cv2.remap(m.astype(np.float32), mx, my, cv2.INTER_LINEAR) > 0.5 for m in masks]
+    return [m for m in moved if m.any()]
 
 
-def plan_layers(rgb: np.ndarray, n: int, things: list[np.ndarray]) -> tuple[list[np.ndarray], list[str], tuple]:
+def plan_layers(rgb: np.ndarray, n: int, things: list[np.ndarray], depth: np.ndarray | None = None
+                ) -> tuple[list[np.ndarray], list[str], tuple]:
     """Own pixels of each layer (bool, disjoint, covering the picture), in rising order, their names, and the
     seams (ground seam, skyline) so the same cut can be redrawn when things move."""
     h, w = rgb.shape[:2]
     union = np.zeros((h, w), bool)
     for m in things:
         union |= m
-    sky = _skyline(rgb, union)
+    sky = _sky_from_depth(depth, union) if depth is not None else None
+    if sky is None:
+        sky = _skyline(rgb, union)
     sky_line = sky if sky is not None else np.zeros(w, int)
     lo = np.maximum(sky_line + int(0.06 * h), int(0.5 * h))
     hi = np.full(w, int(0.9 * h))
-    ground_seam = _seam(rgb, np.minimum(lo, hi - 4), hi)
+    ground_seam = _seam(rgb, np.minimum(lo, hi - 4), hi, depth)
     extra = None
     if sky is None or n >= 4:                                   # a second seam splits the middle band
         top = np.maximum(sky_line + 4, int(0.08 * h))
         extra = _seam(rgb, np.minimum(top + (ground_seam - top) // 4, ground_seam - 8),
-                      np.maximum(ground_seam - (ground_seam - top) // 4, top + 8))
+                      np.maximum(ground_seam - (ground_seam - top) // 4, top + 8), depth)
     return _assemble((h, w), n, things, ground_seam, sky_line if sky is not None else None, extra)
 
 
@@ -230,6 +313,8 @@ def _assemble(shape, n, things, ground_seam, sky_line, extra):
     low, high = np.zeros((h, w), bool), {"mid": np.zeros((h, w), bool), "far": np.zeros((h, w), bool), "sky": np.zeros((h, w), bool)}
     for m in things:
         ys, xs = np.nonzero(m)
+        if not len(ys):                                         # moved out of the picture
+            continue
         y = int(ys.max())
         x = int(np.median(xs[ys >= y - max(2, h // 60)]))
         if y > ground_seam[x] - h // 40:
@@ -277,7 +362,10 @@ def make_layers(rgb: np.ndarray, n: int = 3):
     sh, sw = SEG_H, max(2, int(round(W * SEG_H / H)))
     small = cv2.resize(rgb, (sw, sh), interpolation=cv2.INTER_AREA)
     things = _things(small)
-    own, names, seams = plan_layers(small, n, things)
+    depth = depth_map(small)
+    if depth is not None:
+        things = things + _depth_things(depth, things)
+    own, names, seams = plan_layers(small, n, things, depth)
     return small, things, own, names, seams
 
 
