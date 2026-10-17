@@ -4,11 +4,22 @@
 
 export const LAYOUTS = { '2v': [1, 2], '2h': [2, 1], '3v': [1, 3], 4: [2, 2], 9: [3, 3] }
 export const GRID_NAMES = { '2v': '上下分屏', '2h': '左右分屏', '3v': '三宫格', 4: '四宫格', 9: '九宫格' }
-export const MASKS = [['none', '无'], ['circle', '圆形'], ['heart', '心形'], ['star', '星形'], ['rect', '圆角矩形'], ['linear', '线性'], ['mirror', '镜面']]
+export const MASKS = [['none', '无'], ['cutout', '抠像'], ['circle', '圆形'], ['heart', '心形'], ['star', '星形'], ['rect', '圆角矩形'], ['linear', '线性'], ['mirror', '镜面']]
+export const PARTS = [['things', '前景物体'], ['ground', '地面'], ['mid', '中景'], ['far', '远景'], ['sky', '天空']]
+export const EASES = [['smooth', '平滑'], ['out', '先快后慢'], ['in', '先慢后快'], ['linear', '匀速']]
+export const GROW_STEPS = ['复制下一个镜头的画面，叠在画中画轨道上', '每一层抠出一个完整的部分：前景物体 → 加上地面 → 加上中景，最后一层是整个画面',
+  '每层加两个关键帧：从画面下方升到原位，前快后慢，带动感模糊', '各层按节拍错开（一拍或半拍），最后一层落定时切到下一个镜头']
 export const BLENDS = [['normal', '正常'], ['screen', '滤色'], ['multiply', '正片叠底'], ['overlay', '叠加'], ['lighten', '变亮'], ['darken', '变暗'], ['add', '相加']]
 export const ANIMS = [['none', '无'], ['pop', '弹入'], ['slide_l', '从左滑入'], ['slide_r', '从右滑入'], ['slide_u', '从上滑入'], ['slide_d', '从下滑入'], ['zoom', '缩放'], ['fade', '渐显'], ['spin', '旋入']]
 
 const smooth = (u) => { const v = Math.min(1, Math.max(0, u)); return v * v * (3 - 2 * v) }
+const easeBy = (kind, u) => {
+  const v = Math.min(1, Math.max(0, u))
+  if (kind === 'out') return 1 - (1 - v) ** 3
+  if (kind === 'in') return v ** 3
+  if (kind === 'linear') return v
+  return smooth(v)
+}
 
 // centre (0..1 of the frame), scale (1 = the box) and rotation (degrees) at `local` s into the overlay
 export function keyPose(o, local) {
@@ -18,7 +29,7 @@ export function keyPose(o, local) {
   for (let i = 0; i + 1 < keys.length; i++) {
     const a = keys[i], b = keys[i + 1]
     if (local <= b.t) {
-      const u = smooth((local - a.t) / Math.max(1e-6, b.t - a.t))
+      const u = easeBy(a.e || 'smooth', (local - a.t) / Math.max(1e-6, b.t - a.t))
       return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, s: a.s + (b.s - a.s) * u, r: a.r + (b.r - a.r) * u }
     }
   }

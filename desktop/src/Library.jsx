@@ -100,26 +100,22 @@ export default function Library({ looks, activeSticker, activeStyle, onAddSticke
             <>
               <p className="hint">转场加在镜头的开头：从上一个镜头变到这个镜头的方式</p>
               <button className={`fx-card ${growTarget ? 'on' : ''}`} disabled={busy} onClick={onGrow}
-                      title="点一下：加到播放头所在（或选中）的镜头；再点一下去掉">
+                      title="点一下：在播放头所在（或选中）镜头的开头做万物生长；再点一下去掉">
                 <span className="fx-demo" aria-hidden="true"><i className="g3" /><i className="g2" /><i className="g1" /></span>
                 <span className="fx-text">
                   <b>万物生长{growTarget ? <small className="fx-on">镜头 {growTarget} 已用</small> : null}</b>
-                  <small>把画面按里面的东西分成几层（人和物 → 地面 → 中景 → 天空），一层一层踩着节拍从下往上长出来，盖住上一个镜头</small>
+                  <small>复制下一个镜头，抠出前景物体、地面、中景，加关键帧踩着节拍从下往上升起来，盖住上一个镜头。做好后就是画中画轨道上的几层，都能改</small>
                 </span>
               </button>
               <div className="fx-picks">
-                <div className="fx-picks-head"><b>用了万物生长的镜头</b>
+                <div className="fx-picks-head"><b>用了万物生长的切点</b>
                   <button className="link" disabled={busy} onClick={onAutoGrow} title="按画面层次、主体完整、镜头稳定和节拍重新挑（你手动开关过的镜头不变）">重新自动挑选</button></div>
                 {grownShots.length ? grownShots.map((g) => (
                   <button key={g.n} className="fx-pick" onClick={() => onSeekShot(g.n)}>
-                    <span className="fx-pick-n">镜头 {g.n}</span><small>{g.auto ? `自动：${g.why || '画面合适'}` : '你手动加的'}</small>
+                    <span className="fx-pick-n">镜头 {g.n}</span><small>{g.auto ? `自动：${g.why || '画面合适'}` : '你加的'}</small>
                   </button>
                 )) : <p className="caption">还没有。点「重新自动挑选」，或选中一个镜头后点上面的卡片。</p>}
               </div>
-              <label className="switch-row fx-all">
-                <span><b>全片都用</b><small>每个镜头都这样长出来，第一个从黑底长出</small></span>
-                <input type="checkbox" className="switch" checked={!!growAllOn} disabled={busy} onChange={(e) => onGrowAll(e.target.checked)} />
-              </label>
             </>
           )}
           {tab === 'music' && (

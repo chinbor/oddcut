@@ -369,6 +369,9 @@ def auto_grow(analysis: Analysis, p: Plan, cache_file: Path | None = None, progr
             cache = json.loads(cache_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             cache = {}
+    # earlier automatic picks go (their cuts move back); hand-made ones stay
+    for g in [g for g in p.looks.get("grow_presets") or [] if g.get("source") == "auto"]:
+        p, _ = remove_grow_preset(analysis, p, g["id"])
     rev = effect_rev("grow")
     m = analysis.music
     grid, strength, down = m.grid, np.asarray(m.strength, float), _downbeats(m)
@@ -394,30 +397,134 @@ def auto_grow(analysis: Analysis, p: Plan, cache_file: Path | None = None, progr
     if cache_file:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
-    manual_on = {i for i, s in enumerate(p.shots) if s.grow and s.grow.get("source") == "manual" and not s.grow.get("off")}
-    fixed = {i for i, s in enumerate(p.shots) if s.grow and s.grow.get("source") == "manual"}
-    k = min(AUTO_MAX, max(1, round(p.duration / AUTO_EVERY))) - len(manual_on)
+    manual = [g for g in p.looks.get("grow_presets") or []]
+    near_manual = {i for i, s in enumerate(p.shots) for g in manual if i and abs(s.t_start - g["land"]) < 0.05}
+    off = {i for i, s in enumerate(p.shots) if s.grow and s.grow.get("off")}
+    k = min(AUTO_MAX, max(1, round(p.duration / AUTO_EVERY))) - len(manual)
     picked: list[int] = []
     for r in sorted(report, key=lambda r: -r["score"]):
         i = r["index"]
         if len(picked) >= k or r["score"] < AUTO_THRESHOLD:
             break
-        if i in fixed or p.shots[i].drawn or any(abs(i - j) <= 1 for j in picked + sorted(manual_on)):
+        if i == 0:
+            r["why_not"] = (r["why_not"] + "，" if r["why_not"] else "") + "开场没有上一个镜头"
+            continue
+        if i in off or p.shots[i].drawn or any(abs(i - j) <= 1 for j in picked + sorted(near_manual)):
+            continue
+        try:
+            p, _ = grow_preset(analysis, p, i, 3, "beat" if float(m.beat_period) >= 0.38 else "half", "auto", strict=True)
+        except ValueError as e:
+            r["why_not"] = (r["why_not"] + "，" if r["why_not"] else "") + str(e)
             continue
         picked.append(i)
         r["picked"] = True
-    shots = []
-    for i, s in enumerate(p.shots):
-        if i in fixed:
-            shots.append(s)
-        elif i in picked:
-            beat_len = float(m.beat_period)
-            shots.append(replace(s, grow={"layers": 3, "stagger": "beat" if beat_len >= 0.38 else "half", "blur": 1.0,
-                                          "source": "auto", "why": report[i]["why"][:80]}))
-        else:
-            shots.append(replace(s, grow=None))
-    notes = [f"自动给 {len(picked)} 个镜头加了万物生长" if picked else "没有特别适合万物生长的镜头，这次没有自动加"]
-    return replace(p, shots=shots), notes, report
+    for g, i in zip([g for g in p.looks.get("grow_presets") or [] if g.get("source") == "auto"], picked):
+        g["why"] = report[i]["why"][:80]
+    notes = [f"自动给 {len(picked)} 个切点加了万物生长（都是画中画层 + 抠像 + 关键帧，可以直接改）" if picked
+             else "没有特别适合万物生长的切点，这次没有自动加"]
+    return p, notes, report
+
+
+GROW_STEPS = ["复制下一个镜头的画面，叠在画中画轨道上", "每一层抠出一个完整的部分：前景物体 → 加上地面 → 加上中景，最后一层是整个画面",
+              "每层加两个关键帧：从画面下方升到原位，前快后慢，带动感模糊", "各层按节拍错开（一拍或半拍），最后一层落定时切到下一个镜头"]
+
+
+def _grow_specs(info: dict, n: int) -> list[tuple[list[str], str]]:
+    """What each layer of a 万物生长 shows, in rising order: cumulative regions (each holds everything below its
+    top edge, the way the tutorials cut "the lower part"), the last one the whole picture."""
+    area = {k: float(v.mean()) for k, v in info["regions"].items()}
+    order = [p for p in ("things", "ground", "mid", "far") if area.get(p, 0) >= 0.03]
+    if area.get("sky", 0) < 0.03 and len(order) > 1:
+        order = order[:-1]                        # no sky: the whole picture is the last piece anyway
+    from .cutout import PART_NAMES
+    steps = [(order[:j + 1], ("" if j == 0 else "加上") + PART_NAMES[order[j]]) for j in range(len(order))]
+    want = n - 1
+    if len(steps) > want:                         # the front piece, then evenly up to the last
+        idx = [0] + [round(j * (len(steps) - 1) / max(1, want - 1)) for j in range(1, want)] if want > 1 else [0]
+        steps = [steps[i] for i in idx]
+    return steps[:n - 1] + [([], "整个画面")]
+
+
+def grow_preset(analysis: Analysis, p: Plan, index: int, layers: int = 3, stagger: str = "beat", source: str = "manual",
+                strict: bool = False) -> tuple[Plan, list[str]]:
+    """万物生长 on the cut into shot `index`, made only of ordinary editable things: copies of the shot on 画中画
+    tracks, each with a 抠像 mask of one complete part (cumulative from the front), two position keyframes (from
+    below the frame to its place, ease-out) with motion blur, started a beat or half-beat apart; the main-track
+    cut moves to the moment the last layer lands, so the previous shot plays on underneath. strict: refuse
+    when the cut pieces don't look whole (for the automatic pick)."""
+    from .cutout import _clean, _frames, analyse, first_mask, wholeness
+    from .formats import output_size
+    if not 1 <= index < len(p.shots):
+        raise ValueError("万物生长要从上一个镜头长出来，开场镜头不能用")
+    s = p.shots[index]
+    fps = float(p.template["output"]["fps"])
+    w, h = output_size(p.template)
+    frame0 = _frames(s.clip.path, s.src_start, 1, fps, w / h)[0]
+    info = analyse(frame0)
+    specs = _grow_specs(info, max(2, min(4, layers)))
+    if len(specs) < 2:
+        raise ValueError("这个镜头分不出层次，做不了万物生长")
+    beat = float(p.music.beat_period)
+    step = beat if stagger == "beat" else beat / 2
+    rise = min(0.45, max(0.28, 0.9 * step))
+    n = len(specs)
+    t_cut = s.t_start
+    room = (s.t_end - s.t_start) - MIN_SHOT - 0.05     # the shot must keep its minimum length after the moved cut
+    if (n - 1) * step + rise > room:
+        step = max(0.12, (room - rise) / max(1, n - 1))
+    land = (n - 1) * step + rise
+    if land > room:
+        raise ValueError("这个镜头太短，放不下万物生长")
+    notes = []
+    for k, (parts, label) in enumerate(specs[:-1]):
+        wh = wholeness(_clean(first_mask(info, {"kind": "region", "parts": parts}, frame0.shape[:2])))
+        if wh["area"] < 0.02 or wh["pieces"] > 4 or (k == 0 and wh["solidity"] < 0.35):
+            if strict:
+                raise ValueError(f"「{label}」抠出来不完整")
+            notes.append(f"「{label}」这一层抠得不太完整，可以在画中画面板里改抠像")
+    # tracks: the group needs n free lanes over [cut, land]; the first layer to rise goes on top
+    others = [o for o in p.looks.get("overlays") or []]
+    busy = lambda k: any(o["track"] == k and o["t_start"] < t_cut + land and t_cut < o["t_end"] for o in others)
+    base = next((b for b in range(0, OVERLAY_TRACKS - n + 1) if not any(busy(b + j) for j in range(n))), None)
+    if base is None:
+        raise ValueError("这里的画中画轨道不够用了，先挪开一些画中画")
+    gid = f"grow{int(time.time() * 1000) % 10**9}"
+    new = []
+    for k, (parts, label) in enumerate(specs):
+        t0 = t_cut + k * step
+        o = {"id": f"{gid}_{k + 1}", "track": base + (n - 1 - k), "clip": s.clip.path, "src_start": s.src_start + k * step,
+             "t_start": t0, "t_end": t_cut + land + 1.0 / fps, "x": 0, "y": 0, "w": 1, "h": 1, "opacity": 1, "radius": 0,
+             "mblur": 1.0, "keys": [{"t": 0, "x": 0.5, "y": 1.5, "s": 1, "r": 0, "e": "out"}, {"t": round(rise, 3), "x": 0.5, "y": 0.5, "s": 1, "r": 0}],
+             "group": {"id": gid, "kind": "grow", "layer": k + 1, "of": n, "label": label}}
+        if parts:
+            o["mask"] = {"shape": "cutout", "target": {"kind": "region", "parts": parts}, "feather": 0.004}
+        new.append(o)
+    q, more = move_cut(analysis, p, index, t_cut + land, snap=False)
+    if abs(q.shots[index].t_start - (t_cut + land)) > 1.5 / fps:
+        raise ValueError("上一个镜头的素材不够长，放不下万物生长")
+    looks = dict(q.looks)
+    looks["overlays"] = _check_overlays(analysis, q.duration, others + new)
+    looks["grow_presets"] = [g for g in (looks.get("grow_presets") or [])] + [
+        {"id": gid, "cut": round(t_cut, 4), "land": round(t_cut + land, 4), "layers": n, "stagger": stagger, "source": source}]
+    return replace(q, looks=looks), notes + more
+
+
+def remove_grow_preset(analysis: Analysis, p: Plan, gid: str, remember: bool = False) -> tuple[Plan, list[str]]:
+    """Take a 万物生长 away again: its layers go and the cut moves back to the beat it was on. remember: the
+    user took it away - the automatic pick won't put one on that cut again."""
+    g = next((x for x in p.looks.get("grow_presets") or [] if x["id"] == gid), None)
+    if g is None:
+        return p, []
+    k = next((i for i, s in enumerate(p.shots) if i and abs(s.t_start - g["land"]) < 0.05), None)
+    q = p
+    if k is not None:
+        q, _ = move_cut(analysis, p, k, g["cut"], snap=False)
+    if remember and k is not None:
+        q = replace(q, shots=[replace(s, grow={"off": True, "source": "manual"}) if i == k else s for i, s in enumerate(q.shots)])
+    looks = dict(q.looks)
+    looks["overlays"] = [o for o in looks.get("overlays") or [] if (o.get("group") or {}).get("id") != gid]
+    looks["grow_presets"] = [x for x in looks.get("grow_presets") or [] if x["id"] != gid]
+    return replace(q, looks=looks), []
 
 
 def grow_hint(analysis: Analysis, p: Plan, index: int, cache_file: Path | None = None) -> str | None:
@@ -657,14 +764,14 @@ def move_shot(analysis: Analysis, p: Plan, src: int, dst: int) -> tuple[Plan, li
     return replace(p, shots=shots, looks={**p.looks, "edited_cuts": True}), notes
 
 
-OVERLAY_TRACKS = 3       # 画中画 1..3 above the main track; a higher track is drawn on top
+OVERLAY_TRACKS = 6       # 画中画 1..6 above the main track; a higher track is drawn on top
 MIN_OVERLAY = 0.3
 
 
 def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
     """Picture-in-picture clips laid over the edit (see pip.py for every field). A 宫格 (grid) carries its
     clips in grid.cells instead of one clip; its first cell's clip stands in as the overlay's clip."""
-    from .pip import ANIMS, BLENDS, LAYOUTS, MASKS
+    from .pip import ANIMS, BLENDS, EASES, LAYOUTS, MASKS
     clips = {_norm(c.path): c for c in analysis.clips}
 
     def clip_of(path: str):
@@ -718,7 +825,19 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
             item["grid"] = {"layout": grid["layout"], "cells": cells, "gap": round(num(grid.get("gap"), 0, 0.08, 0.01), 3)}
             item["name"] = {"2v": "上下分屏", "2h": "左右分屏", "3v": "三宫格", "4": "四宫格", "9": "九宫格"}[grid["layout"]]
         m = o.get("mask") or {}
-        if m.get("shape", "none") != "none" and not grid:
+        if m.get("shape") == "cutout" and not grid:
+            tg = m.get("target") or {}
+            if tg.get("kind") == "object":
+                target = {"kind": "object", "x": round(num(tg.get("x"), 0, 1, 0.5), 4), "y": round(num(tg.get("y"), 0, 1, 0.5), 4)}
+            else:
+                from .cutout import PARTS
+                target = {"kind": "region", "parts": [p_ for p_ in (tg.get("parts") or []) if p_ in PARTS] or ["things"]}
+            brush = [{"op": "sub" if b.get("op") == "sub" else "add", "r": round(num(b.get("r"), 0.005, 0.3, 0.04), 4),
+                      "pts": [[round(num(q[0], 0, 1, 0), 4), round(num(q[1], 0, 1, 0), 4)] for q in (b.get("pts") or [])[:400]]}
+                     for b in (m.get("brush") or [])[:60]]
+            item["mask"] = {"shape": "cutout", "target": target, "brush": brush,
+                            "feather": round(num(m.get("feather"), 0, 0.1, 0.004), 4), "invert": bool(m.get("invert"))}
+        elif m.get("shape", "none") != "none" and not grid:
             if m["shape"] not in MASKS:
                 raise ValueError(f"unknown mask {m['shape']!r}")
             item["mask"] = {"shape": m["shape"], "cx": round(num(m.get("cx"), -0.5, 1.5, 0.5), 4),
@@ -727,11 +846,20 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
                             "invert": bool(m.get("invert"))}
         keys = []
         for k_ in o.get("keys") or []:
-            keys.append({"t": round(num(k_.get("t"), 0, t1 - t0, 0), 3), "x": round(num(k_.get("x"), -1, 2, 0.5), 4),
-                         "y": round(num(k_.get("y"), -1, 2, 0.5), 4), "s": round(num(k_.get("s"), 0.05, 5, 1), 4),
-                         "r": round(num(k_.get("r"), -720, 720, 0), 2)})
+            key = {"t": round(num(k_.get("t"), 0, t1 - t0, 0), 3), "x": round(num(k_.get("x"), -1, 2, 0.5), 4),
+                   "y": round(num(k_.get("y"), -1, 2, 0.5), 4), "s": round(num(k_.get("s"), 0.05, 5, 1), 4),
+                   "r": round(num(k_.get("r"), -720, 720, 0), 2)}
+            if k_.get("e") in EASES and k_.get("e") != "smooth":
+                key["e"] = k_["e"]
+            keys.append(key)
         if keys:
             item["keys"] = sorted(keys, key=lambda k_: k_["t"])
+        if o.get("mblur"):
+            item["mblur"] = round(num(o.get("mblur"), 0, 1.5, 0), 2)
+        if o.get("group"):                            # made by a preset (万物生长 ...): {id, kind, layer, of, label}
+            g_ = o["group"]
+            item["group"] = {"id": str(g_.get("id")), "kind": str(g_.get("kind")), "layer": int(g_.get("layer", 0)),
+                             "of": int(g_.get("of", 1)), "label": str(g_.get("label", ""))[:20]}
         for which in ("anim_in", "anim_out"):
             a = o.get(which) or {}
             if a.get("type", "none") != "none":

@@ -28,7 +28,7 @@ def preview_size(w: int, h: int) -> tuple[int, int]:
 
 # the code that draws each kind of effect shot: part of the cache key, so editing it never reuses stale shots
 _EFFECT_CODE = {"sticker": ("stickers.py",), "cartoon": ("stickers.py", "cartoons.py"), "drawn": ("drawn_reveal.py",),
-                "manual": ("stickers.py", "cartoons.py", "sticker_stage.py"), "grow": ("growth.py",)}
+                "manual": ("stickers.py", "cartoons.py", "sticker_stage.py"), "grow": ("growth.py",), "cutout": ("growth.py", "cutout.py")}
 
 
 @functools.lru_cache(maxsize=None)
@@ -313,7 +313,8 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
     if overlays:                       # picture-in-picture (pip.py), drawn over the joined shots
         from .pip import render_overlays
         video_only = render_overlays(video_only, overlays, work_dir / "video_overlays.mp4", w, h, fps,
-                                     sum(s.frames for s in shots), grade, preview, _beat(music), _encode_args(fps, preview))
+                                     sum(s.frames for s in shots), grade, preview, _beat(music), _encode_args(fps, preview),
+                                     effects_cache / "cutouts" if effects_cache else None)
 
     report("render", "mux", 0, 1)
     total = sum(s.frames for s in shots) / fps

@@ -7,7 +7,9 @@ An overlay (plan.looks.overlays[i], checked by pipeline._check_overlays):
     radius, border                             rounded corners (share of the box's short side), white outline
     mask {shape, cx, cy, size, rot, feather, invert}
                                                none | circle | heart | star | rect | linear | mirror, in box space
-    keys [{t, x, y, s, r}]                     keyframes (t from the overlay's start): centre, scale, rotation
+    keys [{t, x, y, s, r, e}]                  keyframes (t from the overlay's start): centre, scale, rotation;
+                                               e = how it moves on to the next one: smooth | out | in | linear
+    mblur                                      motion blur while it moves (0..1.5)
     anim_in / anim_out {type, beats}           pop | slide_l | slide_r | slide_u | slide_d | zoom | fade | spin
     grid {layout, cells: [{clip, src_start}], gap}   a 宫格 instead of one clip (layout 2v 2h 3v 4 9)
 
@@ -23,7 +25,8 @@ import cv2
 import numpy as np
 
 BLENDS = ("normal", "screen", "multiply", "overlay", "lighten", "darken", "add")
-MASKS = ("none", "circle", "heart", "star", "rect", "linear", "mirror")
+MASKS = ("none", "circle", "heart", "star", "rect", "linear", "mirror", "cutout")
+EASES = ("smooth", "out", "in", "linear")
 ANIMS = ("none", "pop", "slide_l", "slide_r", "slide_u", "slide_d", "zoom", "fade", "spin")
 LAYOUTS = {"2v": (1, 2), "2h": (2, 1), "3v": (1, 3), "4": (2, 2), "9": (3, 3)}   # (columns, rows)
 
@@ -46,6 +49,17 @@ def _out_back(u: float) -> float:
     return 1 + (c + 1) * (u - 1) ** 3 + c * (u - 1) ** 2
 
 
+def _ease_by(kind: str, u: float) -> float:
+    u = min(1.0, max(0.0, u))
+    if kind == "out":
+        return _out_cubic(u)
+    if kind == "in":
+        return u ** 3
+    if kind == "linear":
+        return u
+    return _smooth(u)
+
+
 def key_pose(o: dict, local: float) -> tuple[float, float, float, float]:
     """Centre (0..1 of the frame), scale (1 = the box) and rotation (degrees) at `local` s into the overlay.
     Without keyframes: the box, unscaled, at its rotation. Between keyframes: smoothstep."""
@@ -57,7 +71,7 @@ def key_pose(o: dict, local: float) -> tuple[float, float, float, float]:
         return k["x"], k["y"], k["s"], k["r"]
     for a, b in zip(keys, keys[1:]):
         if local <= b["t"]:
-            u = _smooth((local - a["t"]) / max(1e-6, b["t"] - a["t"]))
+            u = _ease_by(a.get("e", "smooth"), (local - a["t"]) / max(1e-6, b["t"] - a["t"]))
             return tuple(a[n] + (b[n] - a[n]) * u for n in ("x", "y", "s", "r"))
     k = keys[-1]
     return k["x"], k["y"], k["s"], k["r"]
@@ -246,8 +260,10 @@ def _blend(a: np.ndarray, b: np.ndarray, mode: str) -> np.ndarray:
 class _Layer:
     """One overlay while it is on screen: its reader(s), box-space alpha and border."""
 
-    def __init__(self, o: dict, w: int, h: int, fps: float, grade: str, preview: bool):
+    def __init__(self, o: dict, w: int, h: int, fps: float, grade: str, preview: bool, cache_dir: Path | None = None):
         self.o = o
+        self.cut = None                              # 抠像: one mask per frame (box space, SEG_H tall)
+        self.f = 0
         self.bw, self.bh = max(2, round(o["w"] * w / 2) * 2), max(2, round(o["h"] * h / 2) * 2)
         n = int(math.ceil((o["t_end"] - o["t_start"]) * fps)) + 2
         if o.get("grid"):
@@ -262,7 +278,14 @@ class _Layer:
                 alpha[y:y + ch, x:x + cw] = np.maximum(alpha[y:y + ch, x:x + cw], cell[:self.bh - y, :self.bw - x] / 255)
         else:
             self.readers = [_Reader(o["clip"], o.get("src_start", 0.0), n, self.bw, self.bh, fps, grade, preview)]
-            alpha = mask_image(o, self.bw, self.bh)
+            m = o.get("mask") or {}
+            if m.get("shape") == "cutout":
+                from .cutout import cutout_masks
+                self.cut = cutout_masks(o["clip"], o.get("src_start", 0.0), n, fps, self.bw / self.bh, m.get("target") or {},
+                                        m.get("brush"), cache_dir)
+                alpha = np.ones((self.bh, self.bw), np.float32)
+            else:
+                alpha = mask_image(o, self.bw, self.bh)
         self.alpha = alpha.astype(np.float32)
         self.cache = None
         self.border = None
@@ -272,8 +295,21 @@ class _Layer:
             cv2.drawContours(edge, cs, -1, 255, max(2, round(min(w, h) * 0.006)), cv2.LINE_AA)
             self.border = edge.astype(np.float32) / 255
 
+    def cut_alpha(self) -> np.ndarray | None:
+        """This frame's 抠像 mask at box size (soft edge, feathered as asked), or None."""
+        if self.cut is None:
+            return None
+        m = self.cut[min(self.f, len(self.cut) - 1)].astype(np.float32)
+        feather = float((self.o.get("mask") or {}).get("feather", 0.0))
+        m = cv2.GaussianBlur(m, (0, 0), 0.8 + feather * m.shape[0] * 0.5)
+        a = cv2.resize(m, (self.bw, self.bh), interpolation=cv2.INTER_LINEAR)
+        if (self.o.get("mask") or {}).get("invert"):
+            a = 1 - a
+        return a
+
     def frame(self) -> np.ndarray:
         """The box's picture for the next frame (uint8)."""
+        self.f += 1
         if not self.o.get("grid"):
             return self.readers[0].read()
         rgb = np.zeros((self.bh, self.bw, 3), np.uint8)
@@ -298,6 +334,7 @@ def _place(base: np.ndarray, layer: _Layer, local: float, beat: float):
     if s <= 0.01 or opacity <= 0.003:
         layer.frame()                           # keep the clip running
         return
+    cut = layer.cut_alpha()
     rgb = layer.frame()
     X, Y = (cx + dx) * W, (cy + dy) * H
     M = cv2.getRotationMatrix2D((layer.bw / 2, layer.bh / 2), -r, s)
@@ -312,12 +349,22 @@ def _place(base: np.ndarray, layer: _Layer, local: float, beat: float):
     M[1, 2] -= y0
     size = (x1 - x0, y1 - y0)
     key = (x0, y0, x1, y1, round(opacity, 4), *np.round(M, 4).ravel())
-    if layer.cache is None or layer.cache[0] != key:
-        a_w = cv2.warpAffine(layer.alpha, M, size, flags=cv2.INTER_LINEAR) * opacity
+    if cut is not None or layer.cache is None or layer.cache[0] != key:
+        a_w = cv2.warpAffine(layer.alpha if cut is None else cut, M, size, flags=cv2.INTER_LINEAR) * opacity
         b_w = cv2.warpAffine(layer.border, M, size, flags=cv2.INTER_LINEAR) * opacity if layer.border is not None else None
         layer.cache = (key, a_w, 1.0 - a_w, b_w, None if b_w is None else 1.0 - b_w)
     _, a_w, inv, b_w, binv = layer.cache
     img = cv2.warpAffine(rgb, M, size, flags=cv2.INTER_LINEAR)
+    mb = float(o.get("mblur", 0) or 0)
+    if mb > 0:                                   # motion blur: smear along the move between frames
+        nx, ny, _, _ = key_pose(o, local + 1.0 / 30)
+        ddx, ddy = (nx - cx) * W, (ny - cy) * H
+        k = int(min(0.06 * H, 0.5 * mb * max(abs(ddx), abs(ddy))))
+        if k >= 3:
+            ks = (1, k | 1) if abs(ddy) >= abs(ddx) else (k | 1, 1)
+            img = cv2.blur(img, ks)
+            a_w = cv2.blur(a_w, ks)
+            inv = 1.0 - a_w
     roi = base[y0:y1, x0:x1]
     mode = o.get("blend", "normal")
     if mode != "normal":
@@ -329,7 +376,7 @@ def _place(base: np.ndarray, layer: _Layer, local: float, beat: float):
 
 
 def render_overlays(video: Path, overlays: list[dict], out: Path, w: int, h: int, fps: float, frames: int,
-                    grade: str, preview: bool, beat: float, encode: list[str]) -> Path:
+                    grade: str, preview: bool, beat: float, encode: list[str], cache_dir: Path | None = None) -> Path:
     """The joined edit with every overlay drawn on it (lower track first, so higher ones end up on top)."""
     order = sorted(overlays, key=lambda o: (o["track"], o["t_start"]))
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(video), "-frames:v", str(frames),
@@ -358,7 +405,7 @@ def render_overlays(video: Path, overlays: list[dict], out: Path, w: int, h: int
             base = np.frombuffer(raw, np.uint8).reshape(h, w, 3).copy()
             for k in on:
                 if k not in live:
-                    live[k] = _Layer(order[k], w, h, fps, grade, preview)
+                    live[k] = _Layer(order[k], w, h, fps, grade, preview, cache_dir)
                 _place(base, live[k], t - order[k]["t_start"], beat)
             enc.stdin.write(base.tobytes())
     finally:

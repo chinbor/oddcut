@@ -32,7 +32,8 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
                                  draft, track, stickerImage, showImage, autoSticker, keySel, onSelectKey, onDraft,
                                  onMoveKey, onCommit, onDeleteKey, onStillKey, onPlaceAuto, onDropSticker, recordArmed,
                                  onRecorded, boxMode, onBox, status, wave, segment, loop, setLoop, overlays = [], ovSel,
-                                 onSelectOverlay, onOverlayDraft, onOverlayCommit, clipThumbs = {}, ovShowImage }) {
+                                 onSelectOverlay, onOverlayDraft, onOverlayCommit, clipThumbs = {}, ovShowImage, cutTool, setCutTool,
+                                 planPath }) {
   const boxRef = useRef(null)
   const [aw, ah] = aspect
   const keep = useRef({ t: 0, playing: false })
@@ -41,6 +42,8 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
   const [menu, setMenu] = useState(null)          // right-click menu on a keyframe: {j, x, y}
   const [help, setHelp] = useState(false)
   const [rec, setRec] = useState(null)            // live recorded points while 边播边拖
+  const [stroke, setStroke] = useState(null)        // a 抠像 brush stroke being painted: {op, pts}
+  const [cutImg, setCutImg] = useState(null)       // the selected layer's 抠像 mask at the playhead (preview)
   const [fsz, setFsz] = useState([0, 0])            // preview frame size in px (for rounded overlay corners)
   useEffect(() => {
     const el = boxRef.current
@@ -214,8 +217,40 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     else onOverlayDraft(o.id, { x: pose.x - (pose.w ?? o.w) / 2, y: pose.y - (pose.h ?? o.h) / 2, w: pose.w ?? o.w, h: pose.h ?? o.h, rot: pose.r })
     onOverlayCommit()
   }
+  // a point in the layer's own (unrotated, 0..1) box space
+  const boxPoint = (ev, o, boxEl) => {
+    const br = boxEl.getBoundingClientRect()
+    const p0 = keyPose(o, ovLocal(o))
+    const fr = rect()
+    const bw = o.w * fr.width * p0.s, bh = o.h * fr.height * p0.s
+    const ang = (-p0.r * Math.PI) / 180
+    const dx = ev.clientX - (br.left + br.width / 2), dy = ev.clientY - (br.top + br.height / 2)
+    return [Math.min(1, Math.max(0, 0.5 + (dx * Math.cos(ang) - dy * Math.sin(ang)) / bw)),
+            Math.min(1, Math.max(0, 0.5 + (dx * Math.sin(ang) + dy * Math.cos(ang)) / bh))]
+  }
+  // 抠像 tools on the selected layer: click an object to cut it out; paint to add to / erase from the cut
+  const cutDown = (e, o) => {
+    const el = e.currentTarget
+    const m = o.mask || {}
+    if (cutTool === 'pick') {
+      e.preventDefault(); e.stopPropagation()
+      const [x, y] = boxPoint(e, o, el)
+      onOverlayDraft(o.id, { mask: { ...m, shape: 'cutout', target: { kind: 'object', x, y } } })
+      onOverlayCommit()
+      setCutTool(null)
+      return
+    }
+    const pts = [boxPoint(e, o, el)]
+    setStroke({ op: cutTool, pts })
+    drag(e, (ev) => { pts.push(boxPoint(ev, o, el)); setStroke({ op: cutTool, pts: [...pts] }) }, () => {
+      setStroke(null)
+      onOverlayDraft(o.id, { mask: { ...m, brush: [...(m.brush || []), { op: cutTool, r: 0.03, pts: pts.filter((_, i) => i % 2 === 0 || i === pts.length - 1) }] } })
+      onOverlayCommit()
+    })
+  }
   const ovDown = (e, o) => {
     if (e.button !== 0) return
+    if (o.id === ovSel && cutTool) return cutDown(e, o)
     if (o.id !== ovSel) onSelectOverlay(o.id)
     const el = e.currentTarget
     const p0 = keyPose(o, ovLocal(o))
@@ -283,6 +318,19 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     }, () => { if (m) onOverlayCommit() })
   }
   const [frameW, frameH] = fsz
+  // the 抠像 mask of the selected layer at the playhead, from the backend (it follows the picture)
+  const selOv = overlays.find((o) => o.id === ovSel)
+  const cutKey = selOv && selOv.mask?.shape === 'cutout' && time >= selOv.t_start && time < selOv.t_end
+    ? `${planPath}|${selOv.id}|${JSON.stringify(selOv.mask)}|${Math.round((time - selOv.t_start) * 10)}` : null
+  useEffect(() => {
+    if (!cutKey) { setCutImg(null); return }
+    let alive = true
+    const id = setTimeout(() => {
+      window.oddcut.api('GET', `/api/cutout?plan=${encodeURIComponent(planPath)}&id=${encodeURIComponent(selOv.id)}&t=${(time - selOv.t_start).toFixed(2)}`)
+        .then((r) => { if (alive) setCutImg(r.image) }).catch(() => {})
+    }, 120)
+    return () => { alive = false; clearTimeout(id) }
+  }, [cutKey])
   const liveOv = overlays.filter((o) => time >= o.t_start && time < o.t_end).sort((a, b) => a.track - b.track)
 
   // 边播边拖: hold the sticker, playback runs at half speed, the drag is recorded and thinned into keyframes
@@ -410,10 +458,18 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
               const mr = m ? (m.size * Math.min(bw, bh)) / 2 : 0
               const ma = m ? (m.rot * Math.PI) / 180 : 0
               return (
-                <div key={o.id} className={`ov-box ${sel ? 'sel' : ''} ${sel && ovShowImage ? 'show' : ''}`} onPointerDown={(e) => ovDown(e, o)}
+                <div key={o.id} className={`ov-box ${sel ? 'sel' : ''} ${sel && ovShowImage ? 'show' : ''} ${sel && cutTool ? `tool-${cutTool}` : ''}`} onPointerDown={(e) => ovDown(e, o)}
                      title={sel ? '拖动移动，拖四角缩放，拖上面的圆点旋转' : `画中画 ${o.track + 1}：点一下选中`}
                      style={{ ...poseStyle(o, p), borderRadius: o.radius * Math.min(bw, bh) }}>
                   {sel && clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} style={{ opacity: o.opacity }} />}
+                  {sel && cutImg && o.mask?.shape === 'cutout' && (
+                    <i className="cut-preview" style={{ WebkitMaskImage: `url(${cutImg})`, maskImage: `url(${cutImg})` }} />
+                  )}
+                  {sel && stroke && (
+                    <svg className={`cut-stroke ${stroke.op}`} viewBox="0 0 100 100" preserveAspectRatio="none">
+                      <polyline points={stroke.pts.map(([x, y]) => `${x * 100},${y * 100}`).join(' ')} />
+                    </svg>
+                  )}
                   {sel && o.grid && (
                     <svg className="ov-grid" viewBox={`0 0 ${bw} ${bh}`} preserveAspectRatio="none">
                       {gridCells(o, bw, bh).map((c, k) => <rect key={k} x={c.x} y={c.y} width={c.w} height={c.h} />)}

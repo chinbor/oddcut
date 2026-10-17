@@ -209,6 +209,19 @@ export default function App() {
   const swapShot = guard(async (index, clip) => commit(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip })))
   // 万物生长 into one shot (cfg = settings, {off} = turned off by hand) or into all of them
   const grownAt = (i) => { const g = plan?.shots[i]?.grow; return !!g && !g.off }
+  // 万物生长 as editable 画中画 layers (grow_preset): the preset that leads into shot i, if any
+  const presetAt = (i) => (plan?.grow_presets || []).find((g) => i > 0 && Math.abs(plan.shots[i].t_start - g.land) < 0.05)
+  const applyPreset = guard(async (i, layers = 3, stagger = 'beat') => {
+    if (i < 1) { toast('开场镜头没有上一个镜头，不能做万物生长'); return }
+    const r = await runJob({ kind: 'grow_preset', analysis: analysis.analysis, plan: plan.plan, index: i, layers, stagger })
+    commit(r)
+  })
+  const removePreset = guard(async (gid) => {
+    setOvSel(null)
+    commit(await runJob({ kind: 'grow_preset', analysis: analysis.analysis, plan: plan.plan, remove: gid }))
+  })
+  const [cutTool, setCutTool] = useState(null)            // 抠像 on the preview: 'pick' | 'add' | 'sub'
+  useEffect(() => { setCutTool(null) }, [ovSel])
   const applyGrow = guard(async (index, cfg) => commit(await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, grow: cfg })))
   const autoGrow = guard(async () => {
     const r = await runJob({ kind: 'grow_auto', analysis: analysis.analysis, plan: plan.plan })
@@ -611,10 +624,10 @@ export default function App() {
                songs={songs} onPickSong={(s) => changeMusic(s)} onBrowseMusic={() => changeMusic()} busy={busy} rail={rail}
                clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} onAddOverlay={(p) => addOverlay(p)}
                onAddGrid={(layout) => addGrid(layout)}
-               growTarget={grownAt(target()) ? target() + 1 : null}
-               onGrow={() => { const i = target(); setSelected(i); applyGrow(i, grownAt(i) ? { off: true } : GROW_DEFAULT) }}
-               onGrowAll={(on) => growAll(on ? GROW_DEFAULT : null)} growAllOn={plan.shots.every((s) => s.grow && !s.grow.off)}
-               onAutoGrow={autoGrow} grownShots={plan.shots.map((s, i) => (s.grow && !s.grow.off ? { n: i + 1, auto: s.grow.source === 'auto', why: s.grow.why } : null)).filter(Boolean)}
+               growTarget={presetAt(target()) ? target() + 1 : null}
+               onGrow={() => { const i = target(); const g = presetAt(i); if (g) removePreset(g.id); else { setSelected(i); applyPreset(i) } }}
+               onAutoGrow={autoGrow}
+               grownShots={plan.shots.map((s, i) => { const g = presetAt(i); return g ? { n: i + 1, auto: g.source === 'auto', why: g.why } : null }).filter(Boolean)}
                onSeekShot={(n) => { setSelected(n - 1); setTime(plan.shots[n - 1].t_start + 0.01) }} />
 
       <Viewer src={previewSrc && mediaUrl(previewSrc)} videoRef={videoRef} time={time} onTime={setTime} playing={playing} setPlaying={setPlaying}
@@ -625,7 +638,7 @@ export default function App() {
               onMoveKey={moveKey} onDeleteKey={deleteKey} onStillKey={stillKey} onPlaceAuto={placeAuto}
               recordArmed={recordArmed} onRecorded={onRecorded} wave={wave} segment={recordArmed ? null : segment} loop={loop} setLoop={setLoop}
               overlays={overlays} ovSel={ovSel} onSelectOverlay={selectOverlay} onOverlayDraft={editOverlay} onOverlayCommit={() => commitOverlays()}
-              clipThumbs={clipThumbs} ovShowImage={!!ovDraft || !!live?.starting || (live && live.total > live.done)}
+              clipThumbs={clipThumbs} cutTool={cutTool} setCutTool={setCutTool} planPath={plan.plan} ovShowImage={!!ovDraft || !!live?.starting || (live && live.total > live.done)}
               onBox={(b) => { setBoxMode(false); drawShot(selected, shot.drawn?.style || 'lineart', b) }}
               status={live?.starting ? '正在生成预览…' : null} />
 
@@ -633,7 +646,9 @@ export default function App() {
         <OverlayProps ov={curOv} thumb={clipThumbs[curOv.clip]} pip={pipBox(curOv.clip)} busy={busy} onClose={() => setOvSel(null)}
                       onChange={(p) => editOverlay(curOv.id, p)} onCommit={() => commitOverlays(curOv.id)} onDelete={() => deleteOverlay(curOv.id)}
                       local={Math.round((time - curOv.t_start) * (plan.fps || 30)) / (plan.fps || 30)} fps={plan.fps || 30} onSeek={setTime}
-                      clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} />
+                      clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs}
+                      cutTool={cutTool} setCutTool={setCutTool} onRemoveGroup={(gid) => removePreset(gid)}
+                      groupWhy={(plan.grow_presets || []).find((g) => g.id === curOv.group?.id)?.why} />
       )}
       {shot && (
         <Properties shot={shot} index={selected} thumb={thumbs?.[selected]} looks={looks}
@@ -641,7 +656,9 @@ export default function App() {
                     draft={myDraft && { ...myDraft, curSize }} check={check && check.index === selected ? check : null} busy={busy}
                     onClose={() => setSelected(null)} onSwap={(clip) => swapShot(selected, clip)}
                     onMoveShot={(d) => moveShot(selected, selected + d)} shotCount={plan.shots.length}
-                    onGrow={(cfg) => applyGrow(selected, cfg)} growDefault={GROW_DEFAULT} onGrowAll={() => growAll(shot.grow || GROW_DEFAULT)}
+                    preset={presetAt(selected)} onApplyPreset={(layers, stagger) => applyPreset(selected, layers, stagger)}
+                    onRemovePreset={(gid) => removePreset(gid)}
+                    onSelectLayer={(gid) => { const o = overlays.find((x) => x.group?.id === gid && x.group.layer === 1); if (o) selectOverlay(o.id) }}
                     onRemoveSticker={() => applyShot(selected, { sticker: null })}
                     onMode={(mode) => { const { index, ...place } = myDraft; applyShot(selected, { sticker: { ...place, mode } }) }}
                     onSize={(v) => editDraft({ size: v })} onSizeCommit={commitDraft}

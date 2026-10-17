@@ -325,7 +325,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
   }
   const beatLen = plan.beat || 60 / (wave?.tempo || 120)
-  const lanes = Math.min(3, Math.max(-1, ...overlays.map((o) => o.track)) + 2)
+  const lanes = Math.min(6, Math.max(-1, ...overlays.map((o) => o.track)) + 2)
   const laneDrop = (k) => ({
     onDragOver: (e) => { if (['application/x-oddcut-clip', 'application/x-oddcut-grid'].some((ty) => e.dataTransfer.types.includes(ty))) { e.preventDefault(); e.currentTarget.classList.add('drop') } },
     onDragLeave: (e) => e.currentTarget.classList.remove('drop'),
@@ -394,14 +394,14 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                 <label><Icon name="film" size={14} />画中画 {k + 1}</label>
                 {!mine.length && <span className="lane-hint" style={{ left: LABEL_W + 10 }}>把左边「素材」里的视频拖到这里，叠在画面上播放</span>}
                 {mine.map((o) => (
-                  <div key={o.id} className={`bar ov ${ovSel === o.id ? 'sel' : ''}`}
+                  <div key={o.id} className={`bar ov ${ovSel === o.id ? 'sel' : ''} ${o.group ? 'grp' : ''}`}
                        style={{ left: x(o.t_start) + 1, width: Math.max(8, (o.t_end - o.t_start) * scale - 2) }}
                        onPointerDown={(e) => ovDrag(e, o, 'body')} title={`${o.name} · ${o.t_start.toFixed(2)} – ${o.t_end.toFixed(2)} 秒（拖动改时间/轨道，拖两端剪短）`}>
                     <i className="edge l" onPointerDown={(e) => ovDrag(e, o, 'in')} />
                     {o.anim_in && <i className="anim-wedge in" style={{ width: o.anim_in.beats * beatLen * scale }} title="入场动画" />}
                     {o.anim_out && <i className="anim-wedge out" style={{ width: o.anim_out.beats * beatLen * scale }} title="出场动画" />}
                     {o.grid ? <i className="bar-grid" /> : clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} />}
-                    <span>{o.name}</span>
+                    <span>{o.group ? `万物生长 ${o.group.layer}/${o.group.of} · ${o.group.label}` : o.name}</span>
                     {(o.keys || []).map((k, j) => (
                       <i key={j} className="diamond" style={{ left: k.t * scale - 5 }} title={`关键帧 · ${k.t.toFixed(2)} 秒（点一下跳过去，拖动改时间）`}
                          onPointerDown={(e) => ovKey(e, o, j)} />

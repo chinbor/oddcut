@@ -480,3 +480,15 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .fx-pick-n { flex: none; color: #4fc79a; font-weight: 600; }
 .grow-why { color: #8fdcbd; }
 .grow-mark.auto { background: repeating-linear-gradient(90deg, rgba(79,199,154,.95) 0 6px, rgba(79,199,154,.55) 6px 9px); }
+
+/* ---------------------------------------------------------------- 抠像 */
+.cut-preview { position: absolute; inset: 0; background: rgba(164,139,255,.38); -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
+               -webkit-mask-mode: luminance; mask-mode: luminance; pointer-events: none; border-radius: inherit; }
+.cut-stroke { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.cut-stroke polyline { fill: none; stroke-width: 6%; stroke-linecap: round; stroke-linejoin: round; vector-effect: none; }
+.cut-stroke.add polyline { stroke: rgba(79,199,154,.6); }
+.cut-stroke.sub polyline { stroke: rgba(255,107,107,.6); }
+.ov-box.tool-pick { cursor: crosshair; }
+.ov-box.tool-add, .ov-box.tool-sub { cursor: cell; }
+.grow-steps { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+.bar.ov.grp { background: #2f8f6c; }

@@ -1,6 +1,6 @@
 import React from 'react'
 import Icon from './icons.jsx'
-import { ANIMS, BLENDS, GRID_NAMES, keyPose, LAYOUTS, MASKS, withKey } from './pip.js'
+import { ANIMS, BLENDS, EASES, GRID_NAMES, GROW_STEPS, keyPose, LAYOUTS, MASKS, PARTS, withKey } from './pip.js'
 
 // Box presets: where the picture-in-picture sits (the clip fills its box, cropped to fit)
 const PRESETS = [
@@ -32,7 +32,7 @@ const Slider = ({ label, min, max, step, value, fmt, onChange, onCommit, disable
 
 // Right panel while a picture-in-picture clip (or 宫格) is selected. Every change is one undo step.
 export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, onCommit, onDelete, local, fps, onSeek,
-                                       clips, clipThumbs }) {
+                                       clips, clipThumbs, cutTool, setCutTool, onRemoveGroup, groupWhy }) {
   const len = ov.t_end - ov.t_start
   const set = (patch) => { onChange(patch); onCommit() }
   const keys = ov.keys || []
@@ -54,10 +54,20 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
     <aside className="props">
       <header className="props-head">
         {thumb ? <img src={thumb} alt="" /> : <i className="thumb-ph" />}
-        <span><b>{ov.grid ? GRID_NAMES[ov.grid.layout] : '画中画'} · 轨道 {ov.track + 1}</b>
+        <span><b>{ov.group ? `万物生长 · 第 ${ov.group.layer}/${ov.group.of} 层` : ov.grid ? GRID_NAMES[ov.grid.layout] : '画中画'} · 轨道 {ov.track + 1}</b>
           <small>{ov.grid ? `${ov.grid.cells.length} 段素材` : ov.name} · {ov.t_start.toFixed(1)} – {ov.t_end.toFixed(1)} 秒 · 共 {len.toFixed(1)} 秒</small></span>
         <button className="icon" onClick={onClose} title="关闭（Esc）"><Icon name="close" /></button>
       </header>
+
+      {ov.group && (
+        <section>
+          <h3>万物生长 · {ov.group.label}</h3>
+          {groupWhy && <p className="caption grow-why">自动选的：{groupWhy}</p>}
+          <ol className="grow-steps">{GROW_STEPS.map((s, i) => <li key={i}>{s}</li>)}</ol>
+          <p className="caption">这一层就是普通的画中画：改抠像、拖关键帧、换时间都可以。</p>
+          <button className="danger wide" disabled={busy} onClick={() => onRemoveGroup(ov.group.id)}><Icon name="trash" size={16} />删除整个万物生长</button>
+        </section>
+      )}
 
       {ov.grid && (
         <section>
@@ -100,8 +110,45 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
       {!ov.grid && (
         <section>
           <h3>蒙版</h3>
-          <Chips items={MASKS} value={mask.shape} disabled={busy} onPick={(shape) => setMask({ shape })} />
-          {mask.shape !== 'none' && (
+          <Chips items={MASKS} value={mask.shape} disabled={busy}
+                 onPick={(shape) => setMask(shape === 'cutout' ? { shape, target: ov.mask?.target || { kind: 'region', parts: ['things'] }, feather: 0.004 } : { shape })} />
+          {mask.shape === 'cutout' && (
+            <>
+              <div className="field">
+                <span className="field-label">抠什么</span>
+                <div className="style-chips">
+                  <button className={cutTool === 'pick' ? 'on' : ''} disabled={busy} onClick={() => setCutTool(cutTool === 'pick' ? null : 'pick')}>点选物体</button>
+                  {PARTS.map(([id, l]) => {
+                    const on = mask.target?.kind === 'region' && (mask.target.parts || []).includes(id)
+                    return (
+                      <button key={id} className={on ? 'on' : ''} disabled={busy}
+                              onClick={() => {
+                                const cur = mask.target?.kind === 'region' ? mask.target.parts || [] : []
+                                const parts = on ? cur.filter((p) => p !== id) : [...cur, id]
+                                if (parts.length) setMask({ target: { kind: 'region', parts } })
+                              }}>{l}</button>
+                    )
+                  })}
+                </div>
+                <p className="caption">{cutTool === 'pick' ? '在预览上点一下要抠的物体' : mask.target?.kind === 'object' ? '抠的是点选的那个物体，会跟着画面动' : '可以多选，合在一起抠出来'}</p>
+              </div>
+              <div className="field">
+                <span className="field-label">画笔修边</span>
+                <div className="style-chips">
+                  <button className={cutTool === 'add' ? 'on' : ''} disabled={busy} onClick={() => setCutTool(cutTool === 'add' ? null : 'add')}>增加</button>
+                  <button className={cutTool === 'sub' ? 'on' : ''} disabled={busy} onClick={() => setCutTool(cutTool === 'sub' ? null : 'sub')}>擦除</button>
+                  {(mask.brush || []).length > 0 && <button disabled={busy} onClick={() => setMask({ brush: [] })}>清除画笔（{mask.brush.length}）</button>}
+                </div>
+              </div>
+              <Slider label="羽化" min={0} max={0.1} step={0.002} value={mask.feather ?? 0.004} fmt={(v) => `${Math.round(v * 1000) / 10}%`} disabled={busy}
+                      onChange={(v) => setMask({ feather: v }, false)} onCommit={onCommit} />
+              <label className="switch-row">
+                <span><b>反转</b><small>留下抠出部分以外的画面</small></span>
+                <input type="checkbox" className="switch" checked={!!mask.invert} disabled={busy} onChange={(e) => setMask({ invert: e.target.checked })} />
+              </label>
+            </>
+          )}
+          {mask.shape !== 'none' && mask.shape !== 'cutout' && (
             <>
               <Slider label="大小" min={0.05} max={2} step={0.01} value={mask.size} fmt={(v) => `${Math.round(v * 100)}%`} disabled={busy}
                       onChange={(v) => setMask({ size: v }, false)} onCommit={onCommit} />
@@ -141,7 +188,16 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
         )}
         <Slider label="旋转" min={-180} max={180} step={1} value={Math.round(pose.r)} fmt={(v) => `${v}°`} disabled={busy}
                 onChange={(v) => setPose({ r: v })} onCommit={onCommit} />
-        <p className="caption">{keys.length ? '有关键帧时，在画面上拖动、缩放、旋转都会记到播放头这一刻，中间平滑过渡。' : '点 ◆ 在这一刻记下位置；换个时刻再拖动画面，就会动起来。'}</p>
+        {here >= 0 && here < keys.length - 1 && (
+          <div className="field">
+            <span className="field-label">到下一个关键帧怎么动</span>
+            <Chips items={EASES} value={keys[here].e || 'smooth'} disabled={busy}
+                   onPick={(e) => set({ keys: keys.map((k, i) => (i === here ? { ...k, e } : k)) })} />
+          </div>
+        )}
+        <Slider label="动感模糊" min={0} max={1.5} step={0.1} value={ov.mblur || 0} fmt={(v) => `${Math.round(v * 100)}%`} disabled={busy}
+                onChange={(v) => onChange({ mblur: v })} onCommit={onCommit} />
+        <p className="caption">{keys.length ? '有关键帧时，在画面上拖动、缩放、旋转都会记到播放头这一刻。' : '点 ◆ 在这一刻记下位置；换个时刻再拖动画面，就会动起来。'}</p>
       </section>
 
       <section>

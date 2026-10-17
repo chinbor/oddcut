@@ -53,6 +53,7 @@ re-render only redoes the effect shots that changed.
 """
 import argparse
 import json
+import math
 import secrets
 import sys
 import threading
@@ -173,6 +174,7 @@ def _plan_result(pl, out: Path, notes=None) -> dict:
             "aspect": pl.template["output"]["aspect"], "fps": float(pl.template["output"]["fps"]),
             "manual": has_manual(pl), "notes": notes or [], "overlays": pl.looks.get("overlays") or [],
             "beat": round(float(pl.music.beat_period), 4),
+            "grow_presets": pl.looks.get("grow_presets") or [],
             "shots": [{**s.to_dict(), "clip_path": s.clip.path, "src_start": s.src_start,
                        "t_start": s.t_start, "t_end": s.t_end} for s in pl.shots]}
 
@@ -327,6 +329,27 @@ def run_overlays(job: Job) -> dict:
     return _plan_result(pl, out, notes)
 
 
+def overlay_cutout(plan_path: Path, oid: str, t: float) -> dict:
+    """The 抠像 mask of overlay `oid` at `t` s into it, as a PNG data URL (white = kept), for the preview."""
+    from PIL import Image
+    from .cutout import cutout_masks
+    from .formats import output_size
+    pl = load_plan(plan_path)
+    o = next(x for x in pl.looks.get("overlays") or [] if x["id"] == oid)
+    m = o.get("mask") or {}
+    if m.get("shape") != "cutout":
+        return {"image": None}
+    w, h = output_size(pl.template)
+    fps = float(pl.template["output"]["fps"])
+    n = int(math.ceil((o["t_end"] - o["t_start"]) * fps)) + 2            # as pip._Layer counts, so the cache is shared
+    bw, bh = max(2, round(o["w"] * w / 2) * 2), max(2, round(o["h"] * h / 2) * 2)
+    masks = cutout_masks(o["clip"], o["src_start"], n, fps, bw / bh, m.get("target") or {},
+                         m.get("brush"), CACHE_DIR / "effects" / "cutouts")
+    f = min(len(masks) - 1, max(0, int(round(t * fps))))
+    img = Image.fromarray((masks[f] * 255).astype("uint8"))
+    return {"image": _data_url(img), "frames": len(masks)}
+
+
 def clip_thumbs(analysis_path: Path) -> dict:
     """A small picture of every clip of the project (the 素材 library), in the clip's own shape."""
     from concurrent.futures import ThreadPoolExecutor
@@ -348,6 +371,23 @@ def run_grow_auto(job: Job) -> dict:
     out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
     save_plan(pl, out)
     return {**_plan_result(pl, out, notes), "grow_report": report}
+
+
+def run_grow_preset(job: Job) -> dict:
+    """万物生长 on the cut into shot `index` as editable 画中画 layers (pipeline.grow_preset), or remove one (group)."""
+    from .pipeline import GROW_STEPS, grow_preset, remove_grow_preset
+    p = job.params
+    plan_path = _path(p["plan"])
+    a, pl = load_analysis(_path(p["analysis"])), load_plan(plan_path)
+    job.on_progress(ProgressEvent("grow", "cut", 0, 1))
+    if p.get("remove"):
+        pl, notes = remove_grow_preset(a, pl, str(p["remove"]), remember=True)
+    else:
+        pl, notes = grow_preset(a, pl, int(p["index"]), int(p.get("layers", 3)), p.get("stagger", "beat"))
+    job.on_progress(ProgressEvent("grow", "cut", 1, 1))
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return {**_plan_result(pl, out, notes), "grow_steps": GROW_STEPS}
 
 
 def run_grow(job: Job) -> dict:
@@ -535,7 +575,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "retime": run_retime, "live": run_live}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "grow_preset": run_grow_preset, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None
@@ -634,7 +674,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         parts = self.path.split("?")[0].strip("/").split("/")
-        if parts[:1] == ["api"] and len(parts) == 2 and parts[1] in ("thumbs", "still", "waveform", "folder", "songs", "clipthumbs"):
+        if parts[:1] == ["api"] and len(parts) == 2 and parts[1] in ("thumbs", "still", "waveform", "folder", "songs", "clipthumbs", "cutout"):
             from urllib.parse import parse_qs, urlsplit
             q = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
             try:
@@ -651,6 +691,8 @@ class Handler(BaseHTTPRequestHandler):
                 if parts[1] == "clipthumbs":
                     return self._send(200, clip_thumbs(_path(q["analysis"])))
                 plan_path = _path(q["plan"])
+                if parts[1] == "cutout":
+                    return self._send(200, overlay_cutout(plan_path, q["id"], float(q.get("t", 0))))
                 if parts[1] == "thumbs":
                     return self._send(200, plan_thumbs(plan_path))
                 if parts[1] == "still":
