@@ -527,6 +527,83 @@ def remove_grow_preset(analysis: Analysis, p: Plan, gid: str, remember: bool = F
     return replace(q, looks=looks), []
 
 
+def drawn_layer(analysis: Analysis, p: Plan, index: int, x: float | None = None, y: float | None = None,
+                style: str = "lineart", reveal_at: float | None = None) -> tuple[Plan, list[str]]:
+    """手绘 made of ordinary editable things: a 画中画 layer of shot `index`'s own footage with a 抠像 of one object
+    (the one at x, y - or the biggest whole one), held from the first frame and a little wider, carrying the
+    手绘 effect in `style` with its 绘制进度 keyframes: 0 blank -> 1 drawn (by ~1.1 s, waiting for the beat) ->
+    2 the real picture again, ending on the strongest beat in the shot's reveal window (or `reveal_at`)."""
+    from .cutout import _clean, _frames, analyse, first_mask
+    from .formats import output_size
+    if not 0 <= index < len(p.shots):
+        raise IndexError(f"shot {index} out of range")
+    s = p.shots[index]
+    fps = float(p.template["output"]["fps"])
+    w, h = output_size(p.template)
+    frame0 = _frames(s.clip.path, s.src_start, 1, fps, w / h)[0]
+    info = analyse(frame0)
+    if x is None or y is None:
+        whole = [m for m in info["things"] if 0.04 <= m.mean() <= 0.6]
+        if not whole:
+            raise ValueError("这个镜头里没找到能画的完整物体，可以点「点选物体」自己选一个")
+        m = max(whole, key=lambda m: m.sum())
+        ys, xs = np.nonzero(m)
+        x, y = float(xs.mean() / m.shape[1]), float(ys.mean() / m.shape[0])
+    target = {"kind": "object", "x": round(float(x), 4), "y": round(float(y), 4)}
+    m = _clean(first_mask(info, target, frame0.shape[:2]))
+    if m.mean() < 0.01:
+        raise ValueError("点的地方没有能画的物体，换个位置点一下")
+    notes: list[str] = []
+    if reveal_at is None:
+        # the timing of the drawn shots (edit_shot): reveal on the strongest beat of the window, the shot made
+        # longer up to a strong beat when it's too short (the next shots give up the time)
+        q, notes = edit_shot(analysis, p, index, drawn={"style": style})
+        s = q.shots[index]
+        reveal_at = s.t_start + float(s.drawn["reveal_at"])
+        p = replace(q, shots=[replace(x, drawn=None, role="drawn" if j == index else x.role) if j == index else x
+                              for j, x in enumerate(q.shots)])
+        s = p.shots[index]
+    t0 = s.t_start
+    R = reveal_at - t0
+    if R < 0.4 or R + 0.4 > s.t_end - t0 + 1e-6:
+        raise ValueError("这个镜头太短，放不下手绘（画线、上色、变回实拍至少要 0.8 秒）")
+    drawn_by = min(1.1, R)
+    keys = [{"t": 0, "v": 0}, {"t": round(drawn_by, 3), "v": 1}]
+    if R > drawn_by + 1e-3:
+        keys.append({"t": round(R, 3), "v": 1})
+    keys.append({"t": round(R + 0.4, 3), "v": 2})
+    others = list(p.looks.get("overlays") or [])
+    t1 = t0 + R + 0.4 + 2.0 / fps
+    track = next((k for k in range(OVERLAY_TRACKS) if not any(o["track"] == k and o["t_start"] < t1 and t0 < o["t_end"] for o in others)), None)
+    if track is None:
+        raise ValueError("这里的画中画轨道不够用了")
+    from .looks import DRAWN_STYLES
+    name = next((d["name"] for d in DRAWN_STYLES if d["id"] == style), "手绘")
+    gid = f"drawn{int(time.time() * 1000) % 10**9}"
+    o = {"id": gid, "track": track, "clip": s.clip.path, "src_start": s.src_start, "t_start": t0, "t_end": min(t1, s.t_end),
+         "x": 0, "y": 0, "w": 1, "h": 1, "opacity": 1, "radius": 0,
+         "mask": {"shape": "cutout", "target": target, "hold": True, "dilate": 0.025, "feather": 0.004},
+         "fx": {"kind": "drawn", "style": style, "keys": keys},
+         "group": {"id": gid, "kind": "drawn", "layer": 1, "of": 1, "label": name}}
+    looks = {**p.looks, "overlays": _check_overlays(analysis, p.duration, others + [o])}
+    return replace(p, looks=looks), notes
+
+
+def drawn_to_layers(analysis: Analysis, p: Plan) -> tuple[Plan, list[str]]:
+    """The planner's 手绘开场 shots as editable 手绘 layers (the app's plans; the CLI keeps rendering them as before)."""
+    notes = []
+    for i, s in enumerate(p.shots):
+        if not s.drawn:
+            continue
+        meta = s.drawn
+        try:
+            p, _ = drawn_layer(analysis, p, i, style=meta.get("style", "lineart"), reveal_at=s.t_start + float(meta["reveal_at"]))
+        except ValueError as e:
+            notes.append(f"镜头 {i + 1} 的手绘没做成：{e}")
+        p = replace(p, shots=[replace(x, drawn=None) if j == i else x for j, x in enumerate(p.shots)])
+    return p, notes
+
+
 def grow_hint(analysis: Analysis, p: Plan, index: int, cache_file: Path | None = None) -> str | None:
     """When a shot is turned on by hand: a short warning if it doesn't suit growing in."""
     from .formats import output_size
@@ -837,6 +914,10 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
                      for b in (m.get("brush") or [])[:60]]
             item["mask"] = {"shape": "cutout", "target": target, "brush": brush,
                             "feather": round(num(m.get("feather"), 0, 0.1, 0.004), 4), "invert": bool(m.get("invert"))}
+            if m.get("hold"):
+                item["mask"]["hold"] = True
+            if m.get("dilate"):
+                item["mask"]["dilate"] = round(num(m.get("dilate"), 0, 0.1, 0.02), 4)
         elif m.get("shape", "none") != "none" and not grid:
             if m["shape"] not in MASKS:
                 raise ValueError(f"unknown mask {m['shape']!r}")
@@ -856,6 +937,11 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
             item["keys"] = sorted(keys, key=lambda k_: k_["t"])
         if o.get("mblur"):
             item["mblur"] = round(num(o.get("mblur"), 0, 1.5, 0), 2)
+        fx = o.get("fx") or {}
+        if fx.get("kind") == "drawn" and not grid:
+            fk = sorted(({"t": round(num(k_.get("t"), 0, t1 - t0, 0), 3), "v": round(num(k_.get("v"), 0, 2, 0), 3)}
+                         for k_ in (fx.get("keys") or [])[:40]), key=lambda k_: k_["t"])
+            item["fx"] = {"kind": "drawn", "style": check_drawn_style(fx.get("style")), "keys": fk or [{"t": 0, "v": 2}]}
         if o.get("group"):                            # made by a preset (万物生长 ...): {id, kind, layer, of, label}
             g_ = o["group"]
             item["group"] = {"id": str(g_.get("id")), "kind": str(g_.get("kind")), "layer": int(g_.get("layer", 0)),

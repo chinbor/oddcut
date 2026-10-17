@@ -276,7 +276,16 @@ export default function App() {
     const r = await runCheck(i, box)
     if (r?.ok) { setCheck(null); return applyShot(i, { drawn: { style, box, label: r.label } }) }
   }
-  const applyStyle = (style) => { const i = target(); setSelected(i); drawShot(i, style) }
+  // 手绘 as an editable layer: the object at (x, y) of shot i - or the biggest whole one - with the drawn effect
+  const [drawPick, setDrawPick] = useState(null)          // waiting for a click on the preview: the style to use
+  const applyDrawn = guard(async (i, style, x = null, y = null) => {
+    setDrawPick(null)
+    const r = await runJob({ kind: 'drawn_layer', analysis: analysis.analysis, plan: plan.plan, index: i, style, x, y })
+    commit(r)
+    const o = (r.overlays || []).filter((x2) => x2.fx).slice(-1)[0]
+    if (o) { setSelected(null); setOvSel(o.id); setTime(o.t_start + 0.01) }
+  })
+  const applyStyle = (style) => { const i = target(); applyDrawn(i, style) }
 
   // ---------------------------------------------------------------- the selected shot's sticker draft
   useEffect(() => {
@@ -538,7 +547,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (e) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return
-      if (e.key === 'Escape') { if (recordArmed) setRecordArmed(false); else if (boxMode) setBoxMode(false); else if (menu) setMenu(false); else { setSelected(null); setOvSel(null) } }
+      if (e.key === 'Escape') { if (drawPick) setDrawPick(null); else if (recordArmed) setRecordArmed(false); else if (boxMode) setBoxMode(false); else if (menu) setMenu(false); else { setSelected(null); setOvSel(null) } }
       if ((e.key === 'Delete' || e.key === 'Backspace') && ovSel && keySel == null && !busy) { e.preventDefault(); deleteOverlay(ovSel) }
       if ((e.key === 'Delete' || e.key === 'Backspace') && keySel != null && myDraft && !busy) { e.preventDefault(); deleteKey(keySel) }
       if (!(e.ctrlKey || e.metaKey)) return
@@ -638,7 +647,8 @@ export default function App() {
               onMoveKey={moveKey} onDeleteKey={deleteKey} onStillKey={stillKey} onPlaceAuto={placeAuto}
               recordArmed={recordArmed} onRecorded={onRecorded} wave={wave} segment={recordArmed ? null : segment} loop={loop} setLoop={setLoop}
               overlays={overlays} ovSel={ovSel} onSelectOverlay={selectOverlay} onOverlayDraft={editOverlay} onOverlayCommit={() => commitOverlays()}
-              clipThumbs={clipThumbs} cutTool={cutTool} setCutTool={setCutTool} planPath={plan.plan} ovShowImage={!!ovDraft || !!live?.starting || (live && live.total > live.done)}
+              clipThumbs={clipThumbs} cutTool={cutTool} setCutTool={setCutTool} planPath={plan.plan}
+              drawPick={drawPick} onDrawPick={(x, y) => applyDrawn(Math.max(0, shotAt(time)), drawPick, x, y)} ovShowImage={!!ovDraft || !!live?.starting || (live && live.total > live.done)}
               onBox={(b) => { setBoxMode(false); drawShot(selected, shot.drawn?.style || 'lineart', b) }}
               status={live?.starting ? '正在生成预览…' : null} />
 
@@ -647,7 +657,7 @@ export default function App() {
                       onChange={(p) => editOverlay(curOv.id, p)} onCommit={() => commitOverlays(curOv.id)} onDelete={() => deleteOverlay(curOv.id)}
                       local={Math.round((time - curOv.t_start) * (plan.fps || 30)) / (plan.fps || 30)} fps={plan.fps || 30} onSeek={setTime}
                       clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs}
-                      cutTool={cutTool} setCutTool={setCutTool} onRemoveGroup={(gid) => removePreset(gid)}
+                      cutTool={cutTool} setCutTool={setCutTool} onRemoveGroup={(gid) => removePreset(gid)} drawnStyles={looks.drawn_styles}
                       groupWhy={(plan.grow_presets || []).find((g) => g.id === curOv.group?.id)?.why} />
       )}
       {shot && (
@@ -662,8 +672,10 @@ export default function App() {
                     onRemoveSticker={() => applyShot(selected, { sticker: null })}
                     onMode={(mode) => { const { index, ...place } = myDraft; applyShot(selected, { sticker: { ...place, mode } }) }}
                     onSize={(v) => editDraft({ size: v })} onSizeCommit={commitDraft}
-                    onDrawn={(on) => { if (on) drawShot(selected, 'lineart'); else { setCheck(null); applyShot(selected, { drawn: null }) } }}
-                    onStyle={(st) => drawShot(selected, st)}
+                    drawPick={drawPick} onDrawPick={(st) => { setDrawPick(st); setTime(Math.max(time, plan.shots[selected].t_start + 0.01)) }}
+                    onDrawAuto={(st) => applyDrawn(selected, st)}
+                    drawnLayers={overlays.filter((o) => o.fx?.kind === 'drawn' && o.t_start >= shot.t_start - 0.01 && o.t_start < shot.t_end)}
+                    onSelectLayer2={(id) => selectOverlay(id)} onDeleteLayer={(id) => deleteOverlay(id)}
                     onForceDrawn={() => { const c = check; setCheck(null); applyShot(selected, { drawn: { style: 'lineart', box: c?.box, force: true, label: c?.label } }) }}
                     onBoxMode={() => setBoxMode(true)} stickerName={stickerName}
                     keyAt={keyAt} onPrevKey={() => seekKey(keyAt.prev)} onNextKey={() => seekKey(keyAt.next)} onToggleKey={toggleKey}

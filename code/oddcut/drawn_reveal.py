@@ -1022,90 +1022,97 @@ def clean_plate(frame: np.ndarray, region: np.ndarray) -> np.ndarray:
     return frame.astype(np.float32) * (1 - feather) + fill * feather
 
 
-def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, timing: Timing, seed: int = 0,
-           background: str = "real", style: str = "lineart"):
-    """Yield output frames (RGB uint8, output size). background="real": only the subject is drawn,
-    on the real scene with the subject removed; "paper": the whole frame is a sheet of paper.
-    `style`: one of looks.DRAWN_STYLES (how the lines and the colour are put down)."""
-    tm = timing.resolve()
-    T, H, W, _ = frames_out.shape
-    rng = np.random.default_rng(seed)
-    region_out = cv2.resize(s.region.astype(np.uint8), (W, H), interpolation=cv2.INTER_LINEAR) > 0
-    # everything below draws on `paper`; in real mode that "paper" is the clean plate. The whole
-    # subject is removed (for animals the drawing covers only the head bust, but the body must not
-    # stick out under it); the body comes back with the background during the reveal.
-    if background == "real":
-        whole = region_out | (cv2.resize(s.mask.astype(np.uint8), (W, H), interpolation=cv2.INTER_LINEAR) > 0)
-        paper = clean_plate(frames_out[0], whole)
-    else:
-        paper = make_paper(H, W, rng)
-    shade, tooth = crayon_texture(H, W, rng)
-    region = cv2.resize(s.region.astype(np.uint8), (W, H), interpolation=cv2.INTER_LINEAR) > 0
-    # crayon colour image (all regions) built once; per-frame only the alphas change
-    fill_rgb = np.zeros((H, W, 3), np.float32)
-    owner = np.full((H, W), -1, np.int32)
-    for i, r in enumerate(regions):
-        if r.order < 1e9:
-            owner[r.mask] = i
-    for i, r in enumerate(regions):
-        sel = owner == i
-        c = r.color[None, :] * shade[sel][:, None]
-        fill_rgb[sel] = c * (1 - 0.22 * tooth[sel][:, None]) + paper[sel] * 0.22 * tooth[sel][:, None]
-    # bust cut: colour fades out raggedly instead of a hard edge
-    fade = np.ones((H, W), np.float32)
-    if s.window is not None:
-        win = cv2.resize(s.window.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST)
-        d = cv2.distanceTransform(win, cv2.DIST_L2, 5)
-        fade = np.clip(d / (0.07 * H) + 0.35 * _noise((H, W), 6, rng), 0, 1)
-    edge_n = _noise((H, W), 3, rng)
+class Drawing:
+    """Everything one drawing needs, set up once from the first frame (output size): paper (or the clean
+    plate), crayon texture, colour regions, reveal fields, the style's look. compose() draws one frame from
+    the line / colour / reveal amounts; at() does it from a single 绘制进度 (0 blank .. 1 drawn .. 2 real)."""
 
-    # reveal fields
-    big = _noise((H, W), 0.03 * W, rng)
-    fine = _noise((H, W), 0.006 * W, rng)
-    nf = 0.7 * big + 0.3 * fine
-    nf = (nf - nf.min()) / (nf.max() - nf.min())
-    ys, xs = np.nonzero(region)
-    cy, cx = ys.mean(), xs.mean()
-    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
-    rad = np.hypot((xx - cx) / W, (yy - cy) / H)
-    rad_sub = rad / max(1e-6, rad[region].max())
-    field_sub = 0.55 * nf + 0.45 * rad_sub
-    field_sub = (field_sub - field_sub[region].min()) / (np.ptp(field_sub[region]) + 1e-6)
-    dist = cv2.distanceTransform((~region).astype(np.uint8), cv2.DIST_L2, 5)
-    dist = dist / max(1.0, dist.max())
-    field_bg = 0.35 * nf + 0.65 * np.sqrt(dist)
-    field_bg = (field_bg - field_bg.min()) / (np.ptp(field_bg) + 1e-6)
+    LINE_SHARE = 0.6 / 1.1            # of 0..1: the part spent on lines, the rest on colour (Timing defaults)
 
-    look = _style_setup(style, frames_out[0], region, owner, regions, paper, H, W, rng)
-    if look.get("width", 1.0) != 1.0:        # thicker / thinner pen for this style
-        strokes = [Stroke(st.pts, st.width * look["width"], st.kind, st.length,
-                          None if st.widths is None else st.widths * look["width"]) for st in strokes]
-    ink = look.get("ink", INK)
-    line_alpha = look.get("line_alpha", 1.0)
+    def __init__(self, frame0: np.ndarray, s: Subject, strokes, regions, seed: int = 0, background: str = "real",
+                 style: str = "lineart"):
+        H, W, _ = frame0.shape
+        self.H, self.W = H, W
+        self.regions = regions
+        rng = np.random.default_rng(seed)
+        region_out = cv2.resize(s.region.astype(np.uint8), (W, H), interpolation=cv2.INTER_LINEAR) > 0
+        # everything below draws on `paper`; in real mode that "paper" is the clean plate. The whole
+        # subject is removed (for animals the drawing covers only the head bust, but the body must not
+        # stick out under it); the body comes back with the background during the reveal.
+        if background == "real":
+            whole = region_out | (cv2.resize(s.mask.astype(np.uint8), (W, H), interpolation=cv2.INTER_LINEAR) > 0)
+            paper = clean_plate(frame0, whole)
+        else:
+            paper = make_paper(H, W, rng)
+        self.paper = paper
+        shade, tooth = crayon_texture(H, W, rng)
+        self.shade = shade
+        region = cv2.resize(s.region.astype(np.uint8), (W, H), interpolation=cv2.INTER_LINEAR) > 0
+        self.region = region
+        # crayon colour image (all regions) built once; per-frame only the alphas change
+        fill_rgb = np.zeros((H, W, 3), np.float32)
+        owner = np.full((H, W), -1, np.int32)
+        for i, r in enumerate(regions):
+            if r.order < 1e9:
+                owner[r.mask] = i
+        for i, r in enumerate(regions):
+            sel = owner == i
+            c = r.color[None, :] * shade[sel][:, None]
+            fill_rgb[sel] = c * (1 - 0.22 * tooth[sel][:, None]) + paper[sel] * 0.22 * tooth[sel][:, None]
+        self.fill_rgb = fill_rgb
+        # bust cut: colour fades out raggedly instead of a hard edge
+        fade = np.ones((H, W), np.float32)
+        if s.window is not None:
+            win = cv2.resize(s.window.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST)
+            d = cv2.distanceTransform(win, cv2.DIST_L2, 5)
+            fade = np.clip(d / (0.07 * H) + 0.35 * _noise((H, W), 6, rng), 0, 1)
+        self.fade = fade
+        self.edge_n = _noise((H, W), 3, rng)
 
-    n_line = max(1, round(tm.line * fps))
-    n_color = max(1, round(tm.color * fps))
-    n_hold = round(tm.hold * fps)
-    n_rev = max(1, round(tm.reveal * fps))
-    n_tail = round(tm.tail * fps)
-    still = frames_out[0].astype(np.float32)
-    boil_amp = 0.0011 * W
-    gap = 0.02 * W
-    frame_no = 0
-    line_cache = {}
+        # reveal fields
+        big = _noise((H, W), 0.03 * W, rng)
+        fine = _noise((H, W), 0.006 * W, rng)
+        nf = 0.7 * big + 0.3 * fine
+        nf = (nf - nf.min()) / (nf.max() - nf.min())
+        ys, xs = np.nonzero(region)
+        cy, cx = ys.mean(), xs.mean()
+        yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+        rad = np.hypot((xx - cx) / W, (yy - cy) / H)
+        rad_sub = rad / max(1e-6, rad[region].max())
+        field_sub = 0.55 * nf + 0.45 * rad_sub
+        self.field_sub = (field_sub - field_sub[region].min()) / (np.ptp(field_sub[region]) + 1e-6)
+        dist = cv2.distanceTransform((~region).astype(np.uint8), cv2.DIST_L2, 5)
+        dist = dist / max(1.0, dist.max())
+        field_bg = 0.35 * nf + 0.65 * np.sqrt(dist)
+        self.field_bg = (field_bg - field_bg.min()) / (np.ptp(field_bg) + 1e-6)
 
-    def lines(progress, boil):
+        look = _style_setup(style, frame0, region, owner, regions, paper, H, W, rng)
+        if look.get("width", 1.0) != 1.0:        # thicker / thinner pen for this style
+            strokes = [Stroke(st.pts, st.width * look["width"], st.kind, st.length,
+                              None if st.widths is None else st.widths * look["width"]) for st in strokes]
+        self.look = look
+        self.strokes = strokes
+        self.ink = look.get("ink", INK)
+        self.line_alpha = look.get("line_alpha", 1.0)
+        self.boil_amp = 0.0011 * W
+        self.gap = 0.02 * W
+        self.line_cache = {}
+        self.feat_layers = []
+
+    def lines(self, progress, boil):
         key = (round(progress, 4), boil)
-        if key not in line_cache:
-            line_cache.clear()
-            img = np.asarray(draw_lines(strokes, progress, (W, H), boil, boil_amp, gap, ink), np.float32)
-            al = img[..., 3:] / 255.0 * line_alpha
-            line_cache[key] = (img[..., :3], al)
-        return line_cache[key]
+        if key not in self.line_cache:
+            self.line_cache.clear()
+            img = np.asarray(draw_lines(self.strokes, progress, (self.W, self.H), boil, self.boil_amp, self.gap, self.ink),
+                             np.float32)
+            al = img[..., 3:] / 255.0 * self.line_alpha
+            self.line_cache[key] = (img[..., :3], al)
+        return self.line_cache[key]
 
-    def fill_alpha(f: float) -> np.ndarray:
+    def fill_alpha(self, f: float) -> np.ndarray:
         """Coverage of all regions at colour progress f (0..1): staggered zig-zag wipes."""
-        a = np.zeros((H, W), np.float32)
+        a = np.zeros((self.H, self.W), np.float32)
+        regions = self.regions
         n = len(regions)
         for i, r in enumerate(regions):
             if r.order >= 1e9:       # eye / nose details: last 30%
@@ -1123,29 +1130,29 @@ def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, tim
                 cov = ((r.s < g * 1.15 - 0.15 * saw) & r.mask).astype(np.float32)
             a = np.maximum(a, cov) if r.order < 1e9 else a
             if r.order >= 1e9:
-                feat_layers.append((r, cov))
+                self.feat_layers.append((r, cov))
         return a
 
-    def compose(fill_f: float, line_p: float, boil: int, real_sub=0.0, real_bg=0.0, line_a=1.0, base=None):
-        nonlocal feat_layers
-        feat_layers = []
-        out = paper.copy()
+    def compose(self, fill_f: float, line_p: float, boil: int, real_sub=0.0, real_bg=0.0, line_a=1.0, base=None):
+        look, region = self.look, self.region
+        self.feat_layers = []
+        out = self.paper.copy()
         if fill_f > 0:
-            a = fill_alpha(fill_f) * fade
+            a = self.fill_alpha(fill_f) * self.fade
             if "grow" in look:                 # watercolour: washes bloom in from noisy fronts
                 g = np.clip((fill_f * 1.25 - look["grow"]) / 0.18, 0, 1)
                 a = 0.92 * g * g * (3 - 2 * g) * look["wash_area"] * np.where(region, 1.0, min(1.0, fill_f * 1.6 - 0.6))
-                a = a * fade
+                a = a * self.fade
             elif "cover" in look:              # hatched styles: colour only where the strokes are
                 if "base_rgb" in look:
                     ab = (a * look["base_alpha"])[..., None]
                     out = out * (1 - ab) + look["base_rgb"] * ab
                 a = a * look["cover"]
             else:
-                a = a * np.clip(1.15 + 0.25 * edge_n, 0, 1)       # crayon doesn't cover perfectly
-            out = out * (1 - a[..., None]) + look.get("fill_rgb", fill_rgb) * a[..., None]
-            for r, cov in feat_layers:
-                col = r.color[None, None, :] * shade[..., None]
+                a = a * np.clip(1.15 + 0.25 * self.edge_n, 0, 1)       # crayon doesn't cover perfectly
+            out = out * (1 - a[..., None]) + look.get("fill_rgb", self.fill_rgb) * a[..., None]
+            for r, cov in self.feat_layers:
+                col = r.color[None, None, :] * self.shade[..., None]
                 if look.get("mono"):
                     col = np.repeat(col.mean(axis=2, keepdims=True) * 0.55, 3, axis=2)
                 out = out * (1 - cov[..., None]) + col * cov[..., None]
@@ -1153,28 +1160,60 @@ def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, tim
             ar = np.where(region, real_sub, real_bg)[..., None]
             out = out * (1 - ar) + base * ar
         if line_p > 0 and line_a > 0:
-            rgb, al = lines(line_p, boil)
+            rgb, al = self.lines(line_p, boil)
             al = al * line_a
             out = out * (1 - al) + rgb * al
         return np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
-    feat_layers = []
+    def reveal(self, u: float, boil: int, base: np.ndarray) -> np.ndarray:
+        """The real frame dissolving in, u 0..1: subject first, then the background, lines fade last."""
+        a_sub = _dissolve(self.field_sub, _ease_out(u / 0.6, 1.6))
+        a_bg = _dissolve(self.field_bg, _ease_out((u - 0.25) / 0.65, 1.6))
+        la = 1.0 - float(_smoothstep((u - 0.55) / 0.45))
+        return self.compose(1.0, 1.0, boil, a_sub, a_bg, la, base)
+
+    def at(self, p: float, boil: int, base: np.ndarray) -> np.ndarray:
+        """One frame at 绘制进度 p: 0..LINE_SHARE lines being drawn, ..1 colour going in, 1..2 the real frame
+        (`base`, float) dissolving in; 2 and on: the real frame."""
+        ls = self.LINE_SHARE
+        if p <= 0:
+            return np.clip(self.paper + 0.5, 0, 255).astype(np.uint8)
+        if p < ls:
+            return self.compose(0.0, _ease_out(p / ls), boil)
+        if p <= 1:
+            return self.compose((p - ls) / (1 - ls), 1.0, boil)
+        if p < 2:
+            return self.reveal(p - 1, boil, base)
+        return np.clip(base + 0.5, 0, 255).astype(np.uint8)
+
+
+def render(frames_out: np.ndarray, fps: float, s: Subject, strokes, regions, timing: Timing, seed: int = 0,
+           background: str = "real", style: str = "lineart"):
+    """Yield output frames (RGB uint8, output size). background="real": only the subject is drawn,
+    on the real scene with the subject removed; "paper": the whole frame is a sheet of paper.
+    `style`: one of looks.DRAWN_STYLES (how the lines and the colour are put down)."""
+    tm = timing.resolve()
+    T, H, W, _ = frames_out.shape
+    d = Drawing(frames_out[0], s, strokes, regions, seed, background, style)
+    n_line = max(1, round(tm.line * fps))
+    n_color = max(1, round(tm.color * fps))
+    n_hold = round(tm.hold * fps)
+    n_rev = max(1, round(tm.reveal * fps))
+    n_tail = round(tm.tail * fps)
+    still = frames_out[0].astype(np.float32)
+    frame_no = 0
     for i in range(n_line):
         p = _ease_out((i + 1) / n_line)
-        yield compose(0.0, p, frame_no // 3)
+        yield d.compose(0.0, p, frame_no // 3)
         frame_no += 1
     for i in range(n_color):
-        yield compose((i + 1) / n_color, 1.0, frame_no // 3)
+        yield d.compose((i + 1) / n_color, 1.0, frame_no // 3)
         frame_no += 1
     for i in range(n_hold):
-        yield compose(1.0, 1.0, frame_no // 3)
+        yield d.compose(1.0, 1.0, frame_no // 3)
         frame_no += 1
     for i in range(n_rev):
-        u = (i + 1) / n_rev
-        a_sub = _dissolve(field_sub, _ease_out(u / 0.6, 1.6))
-        a_bg = _dissolve(field_bg, _ease_out((u - 0.25) / 0.65, 1.6))
-        la = 1.0 - float(_smoothstep((u - 0.55) / 0.45))
-        yield compose(1.0, 1.0, frame_no // 3, a_sub, a_bg, la, still)
+        yield d.reveal((i + 1) / n_rev, frame_no // 3, still)
         frame_no += 1
     for i in range(min(n_tail, T)):
         yield frames_out[i]

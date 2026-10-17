@@ -84,7 +84,7 @@ export default function Library({ looks, activeSticker, activeStyle, onAddSticke
           )}
           {tab === 'drawn' && (
             <>
-              <p className="hint">点一个风格，把选中的镜头变成手绘：先画线稿、上色，再在重拍上变回实拍</p>
+              <p className="hint">点一个风格：把播放头这个镜头里最完整的物体抠出来，做成手绘层（先画线稿、上色，再在重拍上变回实拍）。想画别的物体，在右边面板点「点选物体做手绘」</p>
               <div className="style-grid">
                 {looks.drawn_styles.map((d) => (
                   <button key={d.id} className={`style-card ${activeStyle === d.id ? 'on' : ''}`} disabled={busy} onClick={() => onApplyStyle(d.id)}>

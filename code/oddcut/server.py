@@ -221,6 +221,10 @@ def run_plan(job: Job) -> dict:
         pl, notes = carry_manual(load_plan(_path(p["carry_from"])), pl, a)
     if p.get("grow"):
         pl = grow_all(pl, p["grow"])
+    if p.get("editable", True):                 # the app: 手绘开场 as an editable 手绘 layer, not a baked shot
+        from .pipeline import drawn_to_layers
+        pl, more = drawn_to_layers(a, pl)
+        notes = notes + more
     report = None
     if p.get("grow_auto"):
         pl, more, report = auto_grow(a, pl, CACHE_DIR / "grow_scores.json")
@@ -388,6 +392,20 @@ def run_grow_preset(job: Job) -> dict:
     out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
     save_plan(pl, out)
     return {**_plan_result(pl, out, notes), "grow_steps": GROW_STEPS}
+
+
+def run_drawn_layer(job: Job) -> dict:
+    """手绘 on shot `index`: the object at x, y (or the biggest one) as a 画中画 layer with the drawn effect."""
+    from .pipeline import drawn_layer
+    p = job.params
+    plan_path = _path(p["plan"])
+    job.on_progress(ProgressEvent("drawn", "cut", 0, 1))
+    pl, notes = drawn_layer(load_analysis(_path(p["analysis"])), load_plan(plan_path), int(p["index"]),
+                            p.get("x"), p.get("y"), p.get("style", "lineart"))
+    job.on_progress(ProgressEvent("drawn", "cut", 1, 1))
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return _plan_result(pl, out, notes)
 
 
 def run_grow(job: Job) -> dict:
@@ -575,7 +593,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "grow_preset": run_grow_preset, "retime": run_retime, "live": run_live}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "grow_preset": run_grow_preset, "drawn_layer": run_drawn_layer, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None

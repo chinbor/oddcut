@@ -401,7 +401,11 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                     {o.anim_in && <i className="anim-wedge in" style={{ width: o.anim_in.beats * beatLen * scale }} title="入场动画" />}
                     {o.anim_out && <i className="anim-wedge out" style={{ width: o.anim_out.beats * beatLen * scale }} title="出场动画" />}
                     {o.grid ? <i className="bar-grid" /> : clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} />}
-                    <span>{o.group ? `万物生长 ${o.group.layer}/${o.group.of} · ${o.group.label}` : o.name}</span>
+                    <span>{o.fx?.kind === 'drawn' ? `手绘 · ${o.group?.label || ''}` : o.group ? `万物生长 ${o.group.layer}/${o.group.of} · ${o.group.label}` : o.name}</span>
+                    {(o.fx?.keys || []).map((k, j) => (
+                      <i key={`fx${j}`} className="diamond fx" style={{ left: k.t * scale - 5 }} title={`绘制进度 ${Math.round(k.v * 100)}% · ${k.t.toFixed(2)} 秒`}
+                         onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); onSelectOverlay(o.id); onSeek(o.t_start + k.t + 0.001) }} />
+                    ))}
                     {(o.keys || []).map((k, j) => (
                       <i key={j} className="diamond" style={{ left: k.t * scale - 5 }} title={`关键帧 · ${k.t.toFixed(2)} 秒（点一下跳过去，拖动改时间）`}
                          onPointerDown={(e) => ovKey(e, o, j)} />

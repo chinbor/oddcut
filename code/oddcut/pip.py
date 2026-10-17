@@ -11,6 +11,8 @@ An overlay (plan.looks.overlays[i], checked by pipeline._check_overlays):
                                                e = how it moves on to the next one: smooth | out | in | linear
     mblur                                      motion blur while it moves (0..1.5)
     anim_in / anim_out {type, beats}           pop | slide_l | slide_r | slide_u | slide_d | zoom | fade | spin
+    fx {kind: "drawn", style, keys: [{t, v}]}  手绘 on the layer: v = 绘制进度, 0 blank -> 1 drawn -> 2 the real
+                                               picture again (drawn_reveal.Drawing), linear between keyframes
     grid {layout, cells: [{clip, src_start}], gap}   a 宫格 instead of one clip (layout 2v 2h 3v 4 9)
 
 The same pose formulas live in the app (desktop/src/pip.js), so the box on the preview matches the render.
@@ -58,6 +60,20 @@ def _ease_by(kind: str, u: float) -> float:
     if kind == "linear":
         return u
     return _smooth(u)
+
+
+def fx_progress(o: dict, local: float) -> float:
+    """The layer's 绘制进度 at `local` s (linear between its keyframes, held outside them)."""
+    keys = (o.get("fx") or {}).get("keys") or []
+    if not keys:
+        return 2.0
+    if local <= keys[0]["t"]:
+        return float(keys[0]["v"])
+    for a, b in zip(keys, keys[1:]):
+        if local <= b["t"]:
+            u = (local - a["t"]) / max(1e-6, b["t"] - a["t"])
+            return float(a["v"] + (b["v"] - a["v"]) * u)
+    return float(keys[-1]["v"])
 
 
 def key_pose(o: dict, local: float) -> tuple[float, float, float, float]:
@@ -264,6 +280,9 @@ class _Layer:
         self.o = o
         self.cut = None                              # 抠像: one mask per frame (box space, SEG_H tall)
         self.f = 0
+        self.fps = fps
+        self.drawing = None                          # 手绘: built from the first frame
+        self.preview = preview
         self.bw, self.bh = max(2, round(o["w"] * w / 2) * 2), max(2, round(o["h"] * h / 2) * 2)
         n = int(math.ceil((o["t_end"] - o["t_start"]) * fps)) + 2
         if o.get("grid"):
@@ -296,22 +315,56 @@ class _Layer:
             self.border = edge.astype(np.float32) / 255
 
     def cut_alpha(self) -> np.ndarray | None:
-        """This frame's 抠像 mask at box size (soft edge, feathered as asked), or None."""
+        """This frame's 抠像 mask at box size (soft edge, feathered as asked), or None. hold: the first frame's
+        mask throughout (a drawing doesn't move); dilate: a little wider than the object (covers it fully)."""
         if self.cut is None:
             return None
-        m = self.cut[min(self.f, len(self.cut) - 1)].astype(np.float32)
-        feather = float((self.o.get("mask") or {}).get("feather", 0.0))
+        mk = self.o.get("mask") or {}
+        m = self.cut[0 if mk.get("hold") else min(self.f, len(self.cut) - 1)].astype(np.float32)
+        if mk.get("dilate"):
+            k = max(1, int(float(mk["dilate"]) * m.shape[0])) | 1
+            m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        feather = float(mk.get("feather", 0.0))
         m = cv2.GaussianBlur(m, (0, 0), 0.8 + feather * m.shape[0] * 0.5)
         a = cv2.resize(m, (self.bw, self.bh), interpolation=cv2.INTER_LINEAR)
         if (self.o.get("mask") or {}).get("invert"):
             a = 1 - a
         return a
 
+    def _drawn(self, live: np.ndarray, local: float) -> np.ndarray:
+        """手绘: the drawing at this frame's 绘制进度 (the first frame is drawn; the live picture comes back)."""
+        from . import drawn_reveal as dr
+        if self.drawing is None:
+            m = self.cut[0] if self.cut is not None else np.ones((8, 8), bool)
+            m = cv2.resize(m.astype(np.uint8), (self.bw, self.bh), interpolation=cv2.INTER_NEAREST) > 0
+            ys, xs = np.nonzero(m)
+            box = np.array([xs.min(), ys.min(), xs.max(), ys.max()], np.float32) if len(xs) else np.array([0, 0, self.bw, self.bh], np.float32)
+            s = dr.Subject("object", "object", 1.0, box, m, m)
+            try:                                     # an animal / known object: its head, eyes, nose too
+                from .sticker_stage import VISION
+                with VISION:
+                    found, _ = dr.find_subject(live)
+                if found is not None and (found.mask & m).sum() > 0.5 * max(1, (found.mask | m).sum()):
+                    s = found
+            except Exception:                        # noqa: BLE001 - the plain object drawing still works
+                pass
+            strokes = dr.build_strokes(live, s, 1.0, 0)
+            regions, _ = dr.build_fills(live, s, 1.0, k=4, seed=0)
+            regions += dr.feature_fills(live, s, 1.0)
+            self.drawing = dr.Drawing(live, s, strokes, regions, 0, "real", (self.o.get("fx") or {}).get("style", "lineart"))
+        p = fx_progress(self.o, local)
+        if p >= 2:
+            return live
+        return self.drawing.at(p, int(local * self.fps) // 3, live.astype(np.float32))
+
     def frame(self) -> np.ndarray:
         """The box's picture for the next frame (uint8)."""
         self.f += 1
         if not self.o.get("grid"):
-            return self.readers[0].read()
+            live = self.readers[0].read()
+            if (self.o.get("fx") or {}).get("kind") == "drawn":
+                return self._drawn(live, (self.f - 1) / self.fps)
+            return live
         rgb = np.zeros((self.bh, self.bw, 3), np.uint8)
         for rd, (x, y, cw, ch) in zip(self.readers, self.cells):
             rgb[y:y + ch, x:x + cw] = rd.read()[:self.bh - y, :self.bw - x]

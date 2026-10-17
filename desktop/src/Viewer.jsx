@@ -33,7 +33,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
                                  onMoveKey, onCommit, onDeleteKey, onStillKey, onPlaceAuto, onDropSticker, recordArmed,
                                  onRecorded, boxMode, onBox, status, wave, segment, loop, setLoop, overlays = [], ovSel,
                                  onSelectOverlay, onOverlayDraft, onOverlayCommit, clipThumbs = {}, ovShowImage, cutTool, setCutTool,
-                                 planPath }) {
+                                 planPath, drawPick, onDrawPick }) {
   const boxRef = useRef(null)
   const [aw, ah] = aspect
   const keep = useRef({ t: 0, playing: false })
@@ -375,6 +375,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
   const onSurface = (e) => {
     setMenu(null)
     if (e.button !== 0) return
+    if (drawPick) { e.preventDefault(); onDrawPick(...norm(e)); return }
     if (boxMode) {
       const [x0, y0] = norm(e)
       let b = [x0, y0, x0, y0]
@@ -428,7 +429,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
           ))}
           {!layers[front] && <div className="frame-empty">{status || '正在准备预览…'}</div>}
 
-          <div className={`surface ${boxMode ? 'box-mode' : autoSticker && !draft && inShot ? 'place-mode' : ''}`} onPointerDown={onSurface}>
+          <div className={`surface ${boxMode || drawPick ? 'box-mode' : autoSticker && !draft && inShot ? 'place-mode' : ''}`} onPointerDown={onSurface}>
             {showPath && (
               <svg viewBox="0 0 100 100" preserveAspectRatio="none" className={draft.mode === 'follow' ? 'tracked' : 'drawn-path'}>
                 <polyline className="past" points={pts(i0, Math.max(i0, Math.min(f, i1)))} />
@@ -454,7 +455,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
               if (!sel && shot) return null                  // while a shot is being edited, overlays stay out of the way
               const p = keyPose(o, ovLocal(o))
               const bw = o.w * frameW, bh = o.h * frameH
-              const m = o.mask && o.mask.shape !== 'none' ? { cx: 0.5, cy: 0.5, size: 0.8, rot: 0, ...o.mask } : null
+              const m = o.mask && !['none', 'cutout'].includes(o.mask.shape) ? { cx: 0.5, cy: 0.5, size: 0.8, rot: 0, ...o.mask } : null
               const mr = m ? (m.size * Math.min(bw, bh)) / 2 : 0
               const ma = m ? (m.rot * Math.PI) / 180 : 0
               return (
@@ -462,7 +463,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
                      title={sel ? '拖动移动，拖四角缩放，拖上面的圆点旋转' : `画中画 ${o.track + 1}：点一下选中`}
                      style={{ ...poseStyle(o, p), borderRadius: o.radius * Math.min(bw, bh) }}>
                   {sel && clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} style={{ opacity: o.opacity }} />}
-                  {sel && cutImg && o.mask?.shape === 'cutout' && (
+                  {sel && cutImg && o.mask?.shape === 'cutout' && (!o.fx || cutTool) && (
                     <i className="cut-preview" style={{ WebkitMaskImage: `url(${cutImg})`, maskImage: `url(${cutImg})` }} />
                   )}
                   {sel && stroke && (
@@ -503,6 +504,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
           </div>
 
           {boxMode && <span className="frame-tip">在画面上框出要画的东西</span>}
+          {drawPick && <span className="frame-tip">点一下画面里要画成手绘的物体（Esc 取消）</span>}
           {!boxMode && recordArmed && visible && <span className="frame-tip">按住贴纸拖动，视频会慢速播放并记录路线；松开结束</span>}
           {!boxMode && !recordArmed && autoSticker && !draft && inShot && <span className="frame-tip">自动加的贴纸：点画面上的位置，改成手动放在那里</span>}
           {!boxMode && !recordArmed && draft && inShot && hint && (

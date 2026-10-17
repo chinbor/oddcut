@@ -492,3 +492,8 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .ov-box.tool-add, .ov-box.tool-sub { cursor: cell; }
 .grow-steps { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
 .bar.ov.grp { background: #2f8f6c; }
+
+.bar .diamond.fx { background: #ff9a5c; border-color: #4a2410; }
+.bar.ov.grp:has(.diamond.fx) { background: #b8643a; }
+.drawn-chip { justify-content: flex-start; border-color: var(--drawn); background: #2c2018; }
+.drawn-chip small { margin-left: auto; color: #ffc9a6; }

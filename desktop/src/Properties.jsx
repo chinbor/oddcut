@@ -7,6 +7,24 @@ const MODES = [
   ['still', '停在原地', '贴纸一直停在一个位置，不动。'],
 ]
 
+// 手绘: pick a style, then click the object on the preview (or let it pick the biggest whole one)
+function DrawStart({ looks, busy, drawPick, onDrawPick, onDrawAuto }) {
+  const [style, setStyle] = useState('lineart')
+  return (
+    <>
+      <div className="style-chips">
+        {looks.drawn_styles.map((d) => <button key={d.id} className={style === d.id ? 'on' : ''} onClick={() => setStyle(d.id)}>{d.name}</button>)}
+      </div>
+      <div className="row-btns">
+        <button className={drawPick ? 'primary' : ''} disabled={busy} onClick={() => onDrawPick(drawPick ? null : style)}>
+          {drawPick ? '在预览上点要画的物体…（Esc 取消）' : '点选物体做手绘'}</button>
+        <button disabled={busy || !!drawPick} onClick={() => onDrawAuto(style)}>自动选物体</button>
+      </div>
+      <p className="caption">会抠出这个物体，放到画中画轨道上做成手绘层：先画线稿、上色，在重拍上变回实拍。「绘制进度」是关键帧，可以拖。</p>
+    </>
+  )
+}
+
 // 万物生长 on this cut: how many layers and how fast, then build it
 function GrowStart({ busy, onApply }) {
   const [layers, setLayers] = useState(3)
@@ -35,7 +53,8 @@ function GrowStart({ busy, onApply }) {
 export default function Properties({ shot, index, thumb, looks, usableClips, draft, check, busy, onClose, onSwap,
                                      onRemoveSticker, onMode, onSize, onSizeCommit, onDrawn, onStyle, onForceDrawn,
                                      onBoxMode, stickerName, keyAt, onPrevKey, onToggleKey, onNextKey, recordArmed,
-                                     onRecordArm, onMoveShot, shotCount, preset, onApplyPreset, onRemovePreset, onSelectLayer }) {
+                                     onRecordArm, onMoveShot, shotCount, preset, onApplyPreset, onRemovePreset, onSelectLayer,
+                                     drawPick, onDrawPick, onDrawAuto, drawnLayers = [], onSelectLayer2, onDeleteLayer }) {
   const [pickClip, setPickClip] = useState(false)
   const len = shot.t_end - shot.t_start
   const sid = shot.sticker ? shot.sticker.split('@')[0] : null
@@ -151,30 +170,13 @@ export default function Properties({ shot, index, thumb, looks, usableClips, dra
 
       <section>
         <h3>手绘</h3>
-        <label className="switch-row">
-          <span><b>把这个镜头变成手绘</b></span>
-          <input type="checkbox" className="switch" checked={drawnOn || !!check?.pending} disabled={busy || check?.pending}
-                 onChange={(e) => onDrawn(e.target.checked)} />
-        </label>
-        {(drawnOn || check) && (
-          <>
-            <div className="style-chips">
-              {looks.drawn_styles.map((d) => (
-                <button key={d.id} className={style === d.id ? 'on' : ''} disabled={busy || !drawnOn} onClick={() => onStyle(d.id)}>{d.name}</button>
-              ))}
-            </div>
-            {check?.pending && <p className="caption">正在看这个镜头能不能画…</p>}
-            {check && !check.pending && !check.ok && (
-              <div className="warn-box">
-                <Icon name="alert" size={18} />
-                <span>{check.reason}</span>
-                {check.found && <button disabled={busy} onClick={onForceDrawn}>仍然画这个镜头</button>}
-              </div>
-            )}
-            <p className="caption">画的是画面里的主体。不对的话，<button className="link inline" disabled={busy} onClick={onBoxMode}>在预览上框一下</button>要画的东西。</p>
-          </>
-        )}
-        {!drawnOn && !check && <p className="caption">打开后先画线稿再上色，在重拍上变回实拍。镜头太短会自动拉长到下一个重拍。</p>}
+        <DrawStart looks={looks} busy={busy} drawPick={drawPick} onDrawPick={onDrawPick} onDrawAuto={onDrawAuto} />
+        {drawnLayers.map((o) => (
+          <div key={o.id} className="chip-row">
+            <button className="chip drawn-chip" onClick={() => onSelectLayer2(o.id)}>手绘层 · {o.group?.label || '手绘'}<small>改绘制进度、风格</small></button>
+            <button className="icon" disabled={busy} onClick={() => onDeleteLayer(o.id)} title="删掉这个手绘层"><Icon name="trash" size={18} /></button>
+          </div>
+        ))}
       </section>
     </aside>
   )
