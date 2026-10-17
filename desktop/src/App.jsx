@@ -6,7 +6,10 @@ const STAGES = {
   analyze: [['clips', 0.45, '分析素材画面'], ['music', 0.1, '分析音乐节拍'],
             ['stickers', 0.3, '识别可加贴纸的物体'], ['drawn', 0.15, '寻找手绘开场镜头']],
   plan: [['cuts', 1, '生成剪辑方案']],
+  music: [['music', 1, '分析新音乐的节拍']],
+  edit: [['edit', 1, '替换镜头']],
   render: [['effects', 0.45, '渲染贴纸和手绘'], ['shots', 0.5, '渲染镜头'], ['mux', 0.05, '合成音乐']],
+  preview: [['shots', 0.9, '生成预览'], ['mux', 0.1, '合成音乐']],
 }
 const ROLES = {
   hook: ['开场', '#7aa2ff'], drawn: ['手绘开场', '#ff9f6b'], body: ['快切', '#5c6378'],
@@ -16,10 +19,12 @@ const STICKERS = { eyes: '眼睛', anger: '💢', question: '问号' }
 const ASPECT_NAMES = { '9:16': '竖屏 9:16', '3:4': '3:4', '4:5': '4:5', '1:1': '方形 1:1', '16:9': '横屏 16:9' }
 
 // overall 0..1 for a job: stages run in order, so a later stage means the earlier ones are finished
+const stagesOf = (job) => STAGES[job?.preview ? 'preview' : job?.kind] || []
+
 function jobFraction(job) {
   if (!job) return 0
   if (job.status === 'done') return 1
-  const stages = STAGES[job.kind] || []
+  const stages = stagesOf(job)
   const lastSeen = Math.max(-1, ...stages.map(([s], i) => (job.stages[s] ? i : -1)))
   let sum = 0
   stages.forEach(([s, w], i) => {
@@ -30,7 +35,7 @@ function jobFraction(job) {
 }
 
 function stageLabel(job) {
-  const stages = STAGES[job?.kind] || []
+  const stages = stagesOf(job)
   for (let i = stages.length - 1; i >= 0; i--) {
     const [s, , label] = stages[i]
     const st = job.stages[s]
@@ -51,7 +56,8 @@ export default function App() {
   const [job, setJob] = useState(null)          // the running / last job, as the backend reports it
   const [analysis, setAnalysis] = useState(null)
   const [plan, setPlan] = useState(null)
-  const [video, setVideo] = useState(null)
+  const [video, setVideo] = useState(null)        // the full render of the current plan
+  const [preview, setPreview] = useState(null)    // the quick low-res render of the current plan
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
   const cancelRef = useRef(null)
@@ -76,7 +82,7 @@ export default function App() {
     const { id } = await vc.api('POST', '/api/jobs', body)
     cancelRef.current = () => vc.api('POST', `/api/jobs/${id}/cancel`)
     for (;;) {
-      const j = await vc.api('GET', `/api/jobs/${id}`)
+      const j = { ...(await vc.api('GET', `/api/jobs/${id}`)), preview: !!body.preview }
       setJob(j)
       if (j.status === 'done') return j.result
       if (j.status === 'cancelled') throw new Error('已取消')
@@ -100,22 +106,44 @@ export default function App() {
 
   const busy = job && (job.status === 'running' || job.status === 'queued')
 
+  // every new plan gets a quick preview right away; the full render is a separate click
+  const showPlan = async (p) => {
+    setPlan(p)
+    setVideo(null)
+    setPreview(null)
+    setPreview(await runJob({ kind: 'render', plan: p.plan, preview: true }))
+  }
+
   const makePlan = guard(async () => {
     setPlan(null)
     setVideo(null)
+    setPreview(null)
     const a = await runJob({ kind: 'analyze', clips: form.clips, music: form.music, template: form.template,
                              aspect: form.aspect, duration: Number(form.duration),
                              stickers: form.stickers, drawn: form.drawn })
     setAnalysis(a)
     const rejected = a.clips.filter((c) => c.rejected)
     if (rejected.length) setNotice(`${rejected.length} 段素材没被选用：${rejected.map((c) => `${c.name}（${c.reason}）`).join('，')}`)
-    setPlan(await runJob({ kind: 'plan', analysis: a.analysis }))
+    await showPlan(await runJob({ kind: 'plan', analysis: a.analysis }))
   })
 
   const rerollPlan = guard(async () => {
-    setVideo(null)
-    setPlan(await runJob({ kind: 'plan', analysis: analysis.analysis }))
+    await showPlan(await runJob({ kind: 'plan', analysis: analysis.analysis }))
   })
+
+  const changeMusic = guard(async () => {
+    const music = await vc.pickMusic()
+    if (!music) return
+    const a = await runJob({ kind: 'music', analysis: analysis.analysis, music, duration: Number(form.duration) })
+    setAnalysis(a)
+    set('music')(music)
+    setNotice(`已换成 ${a.music.name}（${a.music.tempo} BPM），镜头按新节拍重新排了`)
+    await showPlan(await runJob({ kind: 'plan', analysis: a.analysis }))
+  })
+
+  const swapShot = (index, clip) => guard(async () => {
+    await showPlan(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip }))
+  })()
 
   const render = guard(async () => {
     setVideo(await runJob({ kind: 'render', plan: plan.plan }))
@@ -125,6 +153,9 @@ export default function App() {
     const ex = await vc.examples()
     setForm((f) => ({ ...f, clips: ex.clips, music: ex.music }))
   }
+
+  const usableClips = analysis ? analysis.clips.filter((c) => !c.rejected) : []
+  const shown = video || preview
 
   const exportVideo = async () => {
     const dest = await vc.exportVideo(video.video)
@@ -219,8 +250,9 @@ export default function App() {
               <div className="plan-head">
                 <h2>剪辑方案 <small>{plan.shots.length} 个镜头 · {plan.duration}s · {plan.aspect} · 方案 #{plan.seed}</small></h2>
                 <div className="actions">
-                  <button disabled={busy} onClick={rerollPlan}>换一版</button>
-                  <button className="primary" disabled={busy} onClick={render}>{video ? '重新渲染' : '渲染成片'}</button>
+                  <button disabled={busy} onClick={rerollPlan} title="同样的素材和音乐，换一种剪法">换一版</button>
+                  <button disabled={busy} onClick={changeMusic} title="换一首歌，按新节拍重新排镜头（不用重新分析视频）">换歌…</button>
+                  <button className="primary" disabled={busy || !!video} onClick={render}>{video ? '已渲染' : '渲染成片'}</button>
                 </div>
               </div>
               <div className="timeline">
@@ -235,7 +267,7 @@ export default function App() {
                 ))}
               </div>
               <table>
-                <thead><tr><th>时间</th><th>类型</th><th>素材</th><th>从第几秒</th><th>特效</th></tr></thead>
+                <thead><tr><th>时间</th><th>类型</th><th>素材</th><th>从第几秒</th><th>特效</th><th>换镜头</th></tr></thead>
                 <tbody>
                   {plan.shots.map((s, i) => (
                     <tr key={i}>
@@ -244,6 +276,14 @@ export default function App() {
                       <td>{s.clip}</td>
                       <td>{s.src_start.toFixed(2)}s</td>
                       <td>{s.sticker ? STICKERS[s.sticker] || s.sticker : s.drawn ? `手绘 ${s.drawn.label}` : ''}</td>
+                      <td><div className="swap">
+                        <button className="mini" disabled={busy} onClick={() => swapShot(i)} title="自动换一段合适的素材">换一个</button>
+                        <select disabled={busy} value="" onChange={(e) => e.target.value && swapShot(i, e.target.value)}
+                                title="换成指定的素材">
+                          <option value="">指定…</option>
+                          {usableClips.map((c) => <option key={c.path} value={c.path}>{c.name}</option>)}
+                        </select>
+                      </div></td>
                     </tr>
                   ))}
                 </tbody>
@@ -252,11 +292,12 @@ export default function App() {
 
             <div className="right">
             <div className="preview" style={{ aspectRatio: `${aw} / ${ah}` }}>
-              {video ? (
-                <video key={video.video} src={mediaUrl(video.video)} controls autoPlay />
+              {shown ? (
+                <video key={shown.video} src={mediaUrl(shown.video)} controls autoPlay />
               ) : (
-                <div className="ph">{busy && job?.kind === 'render' ? '渲染中…' : '渲染后在这里预览'}</div>
+                <div className="ph">{busy ? (job?.preview ? '正在生成预览…' : job?.kind === 'render' ? '渲染中…' : '处理中…') : '预览会显示在这里'}</div>
               )}
+              {shown && !video && <span className="badge">预览 · 低清，不含贴纸和手绘</span>}
             </div>
             {video && (
               <div className="video-actions">
@@ -265,6 +306,7 @@ export default function App() {
                 <button onClick={() => vc.showInFolder(video.video)}>打开所在文件夹</button>
               </div>
             )}
+            {!video && preview && <div className="video-actions"><span>满意的话点「渲染成片」出高清版，带贴纸和手绘。</span></div>}
             </div>
           </div>
         )}

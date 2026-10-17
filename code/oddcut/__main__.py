@@ -87,6 +87,7 @@ def main_steps(argv: list[str]) -> None:
     r.add_argument("--plan", required=True)
     r.add_argument("--out", default=str(EDITS_DIR / "odd_cut.mp4"))
     r.add_argument("--keep-temp", action="store_true")
+    r.add_argument("--preview", action="store_true", help="quick low-res cut without sticker / drawn effects")
     for s in (a, p, r):
         s.add_argument("--progress-json", action="store_true", help="machine-readable progress on stdout")
     args = ap.parse_args(argv)
@@ -111,7 +112,7 @@ def main_steps(argv: list[str]) -> None:
             _result(args.progress_json, step="plan", out=str(args.out), shots=len(res.shots),
                     duration=round(res.duration, 3))
         else:
-            tl = render_plan(load_plan(args.plan), args.out, args.keep_temp, cb)
+            tl = render_plan(load_plan(args.plan), args.out, args.keep_temp, cb, preview=args.preview)
             if not args.progress_json:
                 print(f"[4/4] rendered {args.out} ({tl['duration']:.2f}s) in {time.time() - t0:.1f}s")
             _result(args.progress_json, step="render", out=str(args.out), duration=tl["duration"])

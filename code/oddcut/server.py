@@ -18,7 +18,13 @@ Job parameters (paths are absolute or relative to the project root):
     analyze  clips, music, [template], [aspect], [duration], [stickers], [drawn], [work]
              -> {"analysis": path, "clips": [...], "music": {...}, "aspect": ...}
     plan     analysis, [seed], [work]  -> {"plan": path, "shots": [...], "duration": s, "seed": n}
-    render   plan, [out]               -> {"video": path, "duration": s}
+    render   plan, [out], [preview]    -> {"video": path, "duration": s, "preview": bool}
+             preview: low-res and fast, sticker / drawn shots plain unless rendered before
+    music    analysis, music, [music_start], [duration]  -> like analyze; only the song is analyzed again
+    edit     analysis, plan, index, [clip]  -> like plan; swaps shot `index` to `clip` (or another good clip)
+
+Clip analyses and rendered sticker / drawn shots are cached under output/app/cache, so the same
+footage isn't decoded twice and a re-render only redoes the effect shots that changed.
 """
 import argparse
 import json
@@ -34,10 +40,12 @@ from pathlib import Path
 from . import __version__
 from .formats import ASPECTS
 from .paths import OUTPUT_DIR, PROJECT_ROOT, TEMPLATE_DIR
-from .pipeline import Options, analyze, load_analysis, load_plan, plan, render_plan, save_analysis, save_plan
+from .pipeline import (Options, analyze, load_analysis, load_plan, plan, render_plan, replace_shot, save_analysis,
+                       save_plan, with_music)
 from .progress import ProgressEvent
 
 APP_DIR = OUTPUT_DIR / "app"
+CACHE_DIR = APP_DIR / "cache"
 
 
 class Cancelled(Exception):
@@ -112,18 +120,47 @@ def _template_path(t: str | None) -> Path:
     raise ValueError(f"unknown template {t!r}")
 
 
-def run_analyze(job: Job) -> dict:
-    p = job.params
-    opts = Options(aspect=p.get("aspect"), duration=p.get("duration"), music_start=p.get("music_start"),
-                   stickers=p.get("stickers", True), drawn=p.get("drawn", True))
-    a = analyze(_path(p["clips"]), _path(p["music"]), _template_path(p.get("template")), opts, job.on_progress)
-    out = _work_dir(p) / "analysis.json"
-    save_analysis(a, out)
+def _analysis_result(a, out: Path) -> dict:
     return {"analysis": str(out), "work": str(out.parent), "aspect": a.aspect,
             "clips": [{"name": c.name, "path": c.path, "duration": round(c.duration, 2),
                        "size": [c.width, c.height], "rejected": c.rejected, "reason": c.reason,
                        "tagged": any(c.tags), "drawable": bool(c.drawable)} for c in a.clips],
-            "music": {"path": a.music.path, "tempo": round(a.music.tempo, 1), "start": round(a.music.start, 2)}}
+            "music": {"path": a.music.path, "name": Path(a.music.path).name, "tempo": round(a.music.tempo, 1),
+                      "start": round(a.music.start, 2)}}
+
+
+def _plan_result(pl, out: Path) -> dict:
+    return {"plan": str(out), "seed": pl.seed, "duration": round(pl.duration, 2),
+            "aspect": pl.template["output"]["aspect"],
+            "shots": [{**s.to_dict(), "clip_path": s.clip.path} for s in pl.shots]}
+
+
+def _unique(path: Path) -> Path:
+    """path, or path with _2, _3 ... before the suffix if it exists."""
+    n, p = 2, path
+    while p.exists():
+        p, n = path.with_name(f"{path.stem}_{n}{path.suffix}"), n + 1
+    return p
+
+
+def run_analyze(job: Job) -> dict:
+    p = job.params
+    opts = Options(aspect=p.get("aspect"), duration=p.get("duration"), music_start=p.get("music_start"),
+                   stickers=p.get("stickers", True), drawn=p.get("drawn", True))
+    a = analyze(_path(p["clips"]), _path(p["music"]), _template_path(p.get("template")), opts, job.on_progress,
+                cache_dir=CACHE_DIR / "clips")
+    out = _work_dir(p) / "analysis.json"
+    save_analysis(a, out)
+    return _analysis_result(a, out)
+
+
+def run_music(job: Job) -> dict:
+    p = job.params
+    src = _path(p["analysis"])
+    a = with_music(load_analysis(src), _path(p["music"]), p.get("music_start"), p.get("duration"), job.on_progress)
+    out = _unique(src.parent / "analysis.json")
+    save_analysis(a, out)
+    return _analysis_result(a, out)
 
 
 def run_plan(job: Job) -> dict:
@@ -132,21 +169,36 @@ def run_plan(job: Job) -> dict:
     seed = int(p["seed"]) if p.get("seed") is not None else secrets.randbelow(10 ** 6)
     pl = plan(load_analysis(analysis_path), seed, job.on_progress)
     work = _path(p.get("work")) or analysis_path.parent
-    out = work / f"plan_{seed}.json"
+    out = _unique(work / f"plan_{seed}.json")
     save_plan(pl, out)
-    return {"plan": str(out), "seed": seed, "duration": round(pl.duration, 2), "aspect": pl.template["output"]["aspect"],
-            "shots": [{**s.to_dict(), "clip_path": s.clip.path} for s in pl.shots]}
+    return _plan_result(pl, out)
+
+
+def run_edit(job: Job) -> dict:
+    p = job.params
+    plan_path = _path(p["plan"])
+    job.on_progress(ProgressEvent("edit", "edit", 0, 1))
+    pl = replace_shot(load_analysis(_path(p["analysis"])), load_plan(plan_path), int(p["index"]),
+                      str(_path(p["clip"])) if p.get("clip") else None, secrets.randbelow(10 ** 6))
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    job.on_progress(ProgressEvent("edit", "edit", 1, 1))
+    return _plan_result(pl, out)
 
 
 def run_render(job: Job) -> dict:
     p = job.params
     plan_path = _path(p["plan"])
-    out = _path(p.get("out")) or plan_path.parent / f"{plan_path.stem.replace('plan', 'video')}.mp4"
-    tl = render_plan(load_plan(plan_path), out, progress=job.on_progress)
-    return {"video": str(out), "duration": tl["duration"], "timeline": str(out.with_suffix(".timeline.json"))}
+    preview = bool(p.get("preview"))
+    name = plan_path.stem.replace("plan", "preview" if preview else "video")
+    out = _path(p.get("out")) or plan_path.parent / f"{name}.mp4"
+    tl = render_plan(load_plan(plan_path), out, progress=job.on_progress, preview=preview,
+                     effects_cache=CACHE_DIR / "effects")
+    return {"video": str(out), "duration": tl["duration"], "preview": preview,
+            "timeline": str(out.with_suffix(".timeline.json"))}
 
 
-RUNNERS = {"analyze": run_analyze, "plan": run_plan, "render": run_render}
+RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render}
 
 
 def start_job(kind: str, params: dict) -> Job:

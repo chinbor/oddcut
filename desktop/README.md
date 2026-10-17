@@ -18,7 +18,10 @@ desktop/
   src/styles.css
 ```
 
-后端接口见 `code/oddcut/server.py` 开头的说明：`analyze` / `plan` / `render` 三种任务，界面每 0.4 秒查一次进度，可以取消。
+后端接口见 `code/oddcut/server.py` 开头的说明：`analyze` / `plan` / `render` 三种主任务，加上 `music`（换歌，只分析音乐）和 `edit`（换掉某一个镜头）。界面每 0.4 秒查一次进度，可以取消。
+
+每出一个方案会先自动渲染一条低清预览（`render` 带 `preview`，几秒钟，贴纸和手绘先用原画面代替），满意再点「渲染成片」。
+素材分析结果和渲染好的贴纸、手绘镜头缓存在 `output/app/cache/`，同一批素材再分析、或改了几个镜头再渲染，都只做变了的部分。
 中间文件和成片在 `output/app/<时间>/`，导出时另存一份到你选的位置。
 
 环境变量：`ODDCUT_ROOT` 指定项目根目录（默认是 desktop 的上一级），`ODDCUT_PYTHON` 指定 Python。
