@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import Icon from './icons.jsx'
+import { gridCells, keyPose, maskPath, withKey } from './pip.js'
 
 const fmt = (t) => {
   const m = Math.floor(t / 60)
@@ -202,34 +203,84 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
          () => { if (at) { onMoveKey(j, at[0], at[1]); onCommit() } }, el)
   }
 
-  // picture-in-picture: click to select, drag to move, corners resize (the box keeps its shape)
+  // picture-in-picture: click to select, drag to move, a corner to scale, the knob above it to turn. With
+  // keyframes the change goes into the keyframe at the playhead (made if there is none), else into the box.
+  const ovLocal = (o) => Math.round((time - o.t_start) * fps) / fps
+  const poseStyle = (o, p) => ({ left: pct(p.x - o.w / 2), top: pct(p.y - o.h / 2), width: pct(o.w), height: pct(o.h),
+                                 transform: `rotate(${p.r}deg) scale(${p.s})` })
+  const applyStyle = (el, st) => { Object.assign(el.style, st) }
+  const ovSave = (o, pose) => {
+    if (o.keys?.length) onOverlayDraft(o.id, { keys: withKey(o, ovLocal(o), pose, fps) })
+    else onOverlayDraft(o.id, { x: pose.x - (pose.w ?? o.w) / 2, y: pose.y - (pose.h ?? o.h) / 2, w: pose.w ?? o.w, h: pose.h ?? o.h, rot: pose.r })
+    onOverlayCommit()
+  }
   const ovDown = (e, o) => {
     if (e.button !== 0) return
     if (o.id !== ovSel) onSelectOverlay(o.id)
     const el = e.currentTarget
+    const p0 = keyPose(o, ovLocal(o))
     const [x0, y0] = norm(e)
-    let at = null
+    let p = null
     el.classList.add('dragging')
     drag(e, (ev) => {
       const [x, y] = norm(ev)
-      at = { x: o.x + x - x0, y: o.y + y - y0 }
-      el.style.left = pct(at.x); el.style.top = pct(at.y)
-    }, () => { el.classList.remove('dragging'); if (at) { onOverlayDraft(o.id, at); onOverlayCommit() } }, el)
+      p = { ...p0, x: p0.x + x - x0, y: p0.y + y - y0 }
+      applyStyle(el, poseStyle(o, p))
+    }, () => { el.classList.remove('dragging'); if (p) ovSave(o, p) }, el)
   }
-  const ovResize = (e, o, c) => {
+  const ovResize = (e, o) => {
     const el = e.currentTarget.parentElement
     const r = rect()
-    const ratio = (o.w * r.width) / (o.h * r.height)            // box shape in pixels
-    const ax = c.includes('w') ? o.x + o.w : o.x, ay = c.includes('n') ? o.y + o.h : o.y   // the opposite corner stays
-    let box = null
+    const p0 = keyPose(o, ovLocal(o))
+    const cx = r.left + p0.x * r.width, cy = r.top + p0.y * r.height
+    const d0 = Math.max(4, Math.hypot(e.clientX - cx, e.clientY - cy))
+    const keyed = !!o.keys?.length
+    let p = null
     el.classList.add('dragging')
     drag(e, (ev) => {
-      const [x, y] = norm(ev)
-      const wpx = Math.max(Math.abs(x - ax) * r.width, Math.abs(y - ay) * r.height * ratio, 24)
-      const w = Math.min(1.5, wpx / r.width), h = (wpx / ratio) / r.height
-      box = { w, h, x: c.includes('w') ? ax - w : ax, y: c.includes('n') ? ay - h : ay }
-      el.style.left = pct(box.x); el.style.top = pct(box.y); el.style.width = pct(box.w); el.style.height = pct(box.h)
-    }, () => { el.classList.remove('dragging'); if (box) { onOverlayDraft(o.id, box); onOverlayCommit() } }, el)
+      const f = Math.max(0.05, Math.hypot(ev.clientX - cx, ev.clientY - cy) / d0)
+      p = keyed ? { ...p0, s: Math.min(5, p0.s * f) } : { ...p0, w: Math.min(1.5, o.w * f), h: Math.min(1.5, o.h * f) }
+      applyStyle(el, keyed ? poseStyle(o, p) : { ...poseStyle({ ...o, w: p.w, h: p.h }, p) })
+    }, () => { el.classList.remove('dragging'); if (p) ovSave(o, p) }, el)
+  }
+  const ovRotate = (e, o) => {
+    const el = e.currentTarget.parentElement
+    const r = rect()
+    const p0 = keyPose(o, ovLocal(o))
+    const cx = r.left + p0.x * r.width, cy = r.top + p0.y * r.height
+    let p = null
+    drag(e, (ev) => {
+      let deg = (Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180) / Math.PI + 90
+      if (ev.shiftKey) deg = Math.round(deg / 15) * 15
+      if (Math.abs(deg) < 3) deg = 0
+      p = { ...p0, r: Math.round(deg * 10) / 10 }
+      applyStyle(el, poseStyle(o, p))
+    }, () => { if (p) ovSave(o, p) }, el)
+  }
+  // the mask: drag its middle to move it, the side knob to size it, the top knob to turn it (in box space)
+  const maskDrag = (e, o, what) => {
+    const box = e.currentTarget.closest('.ov-box')
+    const br = box.getBoundingClientRect()
+    const p0 = keyPose(o, ovLocal(o))
+    const m0 = { cx: 0.5, cy: 0.5, size: 0.8, rot: 0, ...o.mask }
+    const fr = rect()
+    const bw = o.w * fr.width * p0.s, bh = o.h * fr.height * p0.s
+    const ang = (-p0.r * Math.PI) / 180
+    const toBox = (ev) => {                       // pointer in the box's own (unrotated, 0..1) space
+      const dx = ev.clientX - (br.left + br.width / 2), dy = ev.clientY - (br.top + br.height / 2)
+      return [0.5 + (dx * Math.cos(ang) - dy * Math.sin(ang)) / bw, 0.5 + (dx * Math.sin(ang) + dy * Math.cos(ang)) / bh]
+    }
+    const [sx, sy] = toBox(e)
+    let m = null
+    drag(e, (ev) => {
+      const [x, y] = toBox(ev)
+      if (what === 'move') m = { ...m0, cx: m0.cx + x - sx, cy: m0.cy + y - sy }
+      else if (what === 'size') {
+        const short = Math.min(bw, bh)
+        m = { ...m0, size: Math.max(0.05, Math.min(2, (2 * Math.hypot((x - m0.cx) * bw, (y - m0.cy) * bh)) / short)) }
+      } else m = { ...m0, rot: Math.round((Math.atan2((y - m0.cy) * bh, (x - m0.cx) * bw) * 180) / Math.PI + 90) }
+      onOverlayDraft(o.id, { mask: m })
+    }, () => { if (m) onOverlayCommit() })
   }
   const [frameW, frameH] = fsz
   const liveOv = overlays.filter((o) => time >= o.t_start && time < o.t_end).sort((a, b) => a.track - b.track)
@@ -353,13 +404,33 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
             {liveOv.map((o) => {
               const sel = o.id === ovSel
               if (!sel && shot) return null                  // while a shot is being edited, overlays stay out of the way
+              const p = keyPose(o, ovLocal(o))
+              const bw = o.w * frameW, bh = o.h * frameH
+              const m = o.mask && o.mask.shape !== 'none' ? { cx: 0.5, cy: 0.5, size: 0.8, rot: 0, ...o.mask } : null
+              const mr = m ? (m.size * Math.min(bw, bh)) / 2 : 0
+              const ma = m ? (m.rot * Math.PI) / 180 : 0
               return (
                 <div key={o.id} className={`ov-box ${sel ? 'sel' : ''} ${sel && ovShowImage ? 'show' : ''}`} onPointerDown={(e) => ovDown(e, o)}
-                     title={sel ? '拖动移动，拖四角缩放' : `画中画 ${o.track + 1}：点一下选中`}
-                     style={{ left: `${o.x * 100}%`, top: `${o.y * 100}%`, width: `${o.w * 100}%`, height: `${o.h * 100}%`,
-                              borderRadius: o.radius * Math.min(o.w * frameW, o.h * frameH) }}>
+                     title={sel ? '拖动移动，拖四角缩放，拖上面的圆点旋转' : `画中画 ${o.track + 1}：点一下选中`}
+                     style={{ ...poseStyle(o, p), borderRadius: o.radius * Math.min(bw, bh) }}>
                   {sel && clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} style={{ opacity: o.opacity }} />}
-                  {sel && ['nw', 'ne', 'sw', 'se'].map((c) => <i key={c} className={`corner ${c}`} onPointerDown={(e) => ovResize(e, o, c)} />)}
+                  {sel && o.grid && (
+                    <svg className="ov-grid" viewBox={`0 0 ${bw} ${bh}`} preserveAspectRatio="none">
+                      {gridCells(o, bw, bh).map((c, k) => <rect key={k} x={c.x} y={c.y} width={c.w} height={c.h} />)}
+                    </svg>
+                  )}
+                  {sel && m && (
+                    <>
+                      <svg className="ov-mask" viewBox={`0 0 ${bw} ${bh}`} preserveAspectRatio="none"><path d={maskPath(o, bw, bh)} /></svg>
+                      <i className="mask-knob move" style={{ left: pct(m.cx), top: pct(m.cy) }} title="拖动移动蒙版" onPointerDown={(e) => maskDrag(e, o, 'move')} />
+                      <i className="mask-knob size" style={{ left: m.cx * bw + mr * Math.cos(ma), top: m.cy * bh + mr * Math.sin(ma) }}
+                         title="拖动调蒙版大小" onPointerDown={(e) => maskDrag(e, o, 'size')} />
+                      <i className="mask-knob turn" style={{ left: m.cx * bw + (mr + 18) * Math.sin(ma), top: m.cy * bh - (mr + 18) * Math.cos(ma) }}
+                         title="拖动旋转蒙版" onPointerDown={(e) => maskDrag(e, o, 'turn')} />
+                    </>
+                  )}
+                  {sel && ['nw', 'ne', 'sw', 'se'].map((c) => <i key={c} className={`corner ${c}`} onPointerDown={(e) => ovResize(e, o)} />)}
+                  {sel && <i className="turn-knob" title="拖动旋转（按住 Shift 每 15°）" onPointerDown={(e) => ovRotate(e, o)} />}
                 </div>
               )
             })}

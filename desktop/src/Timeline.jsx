@@ -27,7 +27,7 @@ const fmtS = (t) => (Number.isInteger(t) ? `${t}s` : `${t.toFixed(1)}s`)
 export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot, aspect = 0.5625, wave, time, onSeek, selected, onSelect, stickerName, styleName,
                                    draft, onInOut, onCutMove, busy, pending, live, looks, keySel, onKeySelect, onKeyTime,
                                    metronome, setMetronome, overlays = [], ovSel, onSelectOverlay, onOverlayDraft, onOverlayCommit,
-                                   onDropClip, clipThumbs = {}, clipInfo }) {
+                                   onDropClip, onDropGrid, clipThumbs = {}, clipInfo }) {
   const scroller = useRef(null)
   const canvas = useRef(null)
   const [width, setWidth] = useState(800)
@@ -299,14 +299,42 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     }
     window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
   }
+  // an overlay's keyframe diamond: click = jump there; drag = move it in time (whole frames, between its neighbours)
+  const ovKey = (e, o, j) => {
+    e.preventDefault(); e.stopPropagation()
+    onSelectOverlay(o.id)
+    const keys = o.keys
+    onSeek(o.t_start + keys[j].t + 0.001)
+    const el = e.currentTarget
+    const lo = j > 0 ? keys[j - 1].t + 1 / fps : 0
+    const hi = j < keys.length - 1 ? keys[j + 1].t - 1 / fps : o.t_end - o.t_start
+    const css = el.style.cssText
+    let tt = null
+    const mv = (ev) => {
+      tt = Math.round(Math.min(hi, Math.max(lo, tAt(ev.clientX) - o.t_start)) * fps) / fps
+      el.style.left = `${tt * scale - 5}px`
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up)
+      el.style.cssText = css
+      if (tt != null && tt !== keys[j].t) {
+        flushSync(() => onOverlayDraft(o.id, { keys: keys.map((k, i) => (i === j ? { ...k, t: tt } : k)) }))
+        onOverlayCommit(o.id); onSeek(o.t_start + tt + 0.001)
+      }
+    }
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
+  }
+  const beatLen = plan.beat || 60 / (wave?.tempo || 120)
   const lanes = Math.min(3, Math.max(-1, ...overlays.map((o) => o.track)) + 2)
   const laneDrop = (k) => ({
-    onDragOver: (e) => { if (e.dataTransfer.types.includes('application/x-oddcut-clip')) { e.preventDefault(); e.currentTarget.classList.add('drop') } },
+    onDragOver: (e) => { if (['application/x-oddcut-clip', 'application/x-oddcut-grid'].some((ty) => e.dataTransfer.types.includes(ty))) { e.preventDefault(); e.currentTarget.classList.add('drop') } },
     onDragLeave: (e) => e.currentTarget.classList.remove('drop'),
     onDrop: (e) => {
       e.currentTarget.classList.remove('drop')
       const path = e.dataTransfer.getData('application/x-oddcut-clip')
+      const layout = e.dataTransfer.getData('application/x-oddcut-grid')
       if (path) { e.preventDefault(); onDropClip(path, k, Math.max(0, tAt(e.clientX))) }
+      else if (layout) { e.preventDefault(); onDropGrid(layout, k, Math.max(0, tAt(e.clientX))) }
     },
   })
 
@@ -370,8 +398,14 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                        style={{ left: x(o.t_start) + 1, width: Math.max(8, (o.t_end - o.t_start) * scale - 2) }}
                        onPointerDown={(e) => ovDrag(e, o, 'body')} title={`${o.name} · ${o.t_start.toFixed(2)} – ${o.t_end.toFixed(2)} 秒（拖动改时间/轨道，拖两端剪短）`}>
                     <i className="edge l" onPointerDown={(e) => ovDrag(e, o, 'in')} />
-                    {clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} />}
+                    {o.anim_in && <i className="anim-wedge in" style={{ width: o.anim_in.beats * beatLen * scale }} title="入场动画" />}
+                    {o.anim_out && <i className="anim-wedge out" style={{ width: o.anim_out.beats * beatLen * scale }} title="出场动画" />}
+                    {o.grid ? <i className="bar-grid" /> : clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} />}
                     <span>{o.name}</span>
+                    {(o.keys || []).map((k, j) => (
+                      <i key={j} className="diamond" style={{ left: k.t * scale - 5 }} title={`关键帧 · ${k.t.toFixed(2)} 秒（点一下跳过去，拖动改时间）`}
+                         onPointerDown={(e) => ovKey(e, o, j)} />
+                    ))}
                     <i className="edge r" onPointerDown={(e) => ovDrag(e, o, 'out')} />
                   </div>
                 ))}

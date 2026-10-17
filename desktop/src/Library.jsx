@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import Icon from './icons.jsx'
+import { GRID_NAMES, LAYOUTS } from './pip.js'
 
 const TABS = [['clips', '素材', 'film'], ['sticker', '贴纸', 'sticker'], ['drawn', '手绘', 'brush'], ['fx', '转场', 'sparkle'], ['music', '音乐', 'music']]
 const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
@@ -8,7 +9,7 @@ const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
 // drawing styles (click = draw the selected shot), music (switch the song).
 export default function Library({ looks, activeSticker, activeStyle, onAddSticker, onApplyStyle, music, songs, onPickSong,
                                   onBrowseMusic, busy, rail, clips = [], clipThumbs = {}, onAddOverlay, growTarget, onGrow,
-                                  onGrowAll, growAllOn }) {
+                                  onGrowAll, growAllOn, onAddGrid }) {
   const [tab, setTab] = useState('sticker')
   const [open, setOpen] = useState(false)          // icon-rail mode: the panel flies out
   const show = !rail || open
@@ -27,6 +28,22 @@ export default function Library({ looks, activeSticker, activeStyle, onAddSticke
         <div className="lib-body">
           {tab === 'clips' && (
             <>
+              <div className="lib-group">
+                <h3>宫格 / 分屏</h3>
+                <div className="grid-tiles">
+                  {Object.keys(LAYOUTS).map((id) => (
+                    <button key={id} className="grid-tile" disabled={busy} draggable
+                            onDragStart={(e) => { e.dataTransfer.setData('application/x-oddcut-grid', id); e.dataTransfer.effectAllowed = 'copy' }}
+                            onClick={() => onAddGrid(id)} title={`${GRID_NAMES[id]}：点一下加到播放头这里（用后面几段素材填满），或拖到画中画轨道`}>
+                      <i className="gt-ico" style={{ gridTemplateColumns: `repeat(${LAYOUTS[id][0]}, 1fr)`, gridTemplateRows: `repeat(${LAYOUTS[id][1]}, 1fr)` }}>
+                        {Array.from({ length: LAYOUTS[id][0] * LAYOUTS[id][1] }, (_, k) => <b key={k} />)}
+                      </i>
+                      <span>{GRID_NAMES[id]}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <h3 className="lib-sub">视频素材</h3>
               <p className="hint">拖到时间轴的「画中画」轨道上，叠在画面上面播放；或点一下加到播放头这里</p>
               <div className="clip-tiles">
                 {clips.map((c) => (

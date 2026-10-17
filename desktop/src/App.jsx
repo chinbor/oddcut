@@ -4,6 +4,7 @@ import Library from './Library.jsx'
 import NewProject from './NewProject.jsx'
 import Properties from './Properties.jsx'
 import OverlayProps from './OverlayProps.jsx'
+import { LAYOUTS } from './pip.js'
 import Timeline from './Timeline.jsx'
 import Viewer from './Viewer.jsx'
 
@@ -343,6 +344,26 @@ export default function App() {
     setOvSel(o.id); setSelected(null); setTime(t0 + 0.01)
     applyOverlays([...overlays, { ...o, track: tr }])
   }
+  // a 宫格: the whole frame split into cells, filled with the clips that follow the one under the playhead
+  const addGrid = (layout, track = null, at = time) => {
+    const usable = analysis.clips.filter((c) => !c.rejected)
+    const k = LAYOUTS[layout][0] * LAYOUTS[layout][1]
+    const here = plan.shots[Math.max(0, shotAt(at))]
+    const from = Math.max(0, usable.findIndex((c) => c.path === here?.clip_path)) + 1
+    const cells = Array.from({ length: k }, (_, i) => usable[(from + i) % usable.length])
+    const grid = (wave?.grid?.t || []).filter((_, i) => wave.grid.on_beat?.[i])
+    const near = grid.length ? grid.reduce((b, v) => (Math.abs(v - at) < Math.abs(b - at) ? v : b)) : at
+    const t0 = Math.max(0, Math.min(near, plan.duration - 0.5))
+    const t1 = Math.min(plan.duration, t0 + Math.min(3, ...cells.map((c) => c.duration)))
+    const o = { id: `ov${Date.now().toString(36)}`, clip: cells[0].path, src_start: 0, t_start: t0, t_end: t1, x: 0, y: 0, w: 1, h: 1,
+                opacity: 1, radius: 0.04, border: false, grid: { layout, cells: cells.map((c) => ({ clip: c.path })), gap: 0.01 },
+                anim_in: { type: 'pop', beats: 1 } }
+    const tracks = track != null ? [track, 0, 1, 2] : [0, 1, 2]
+    const tr = tracks.find((n) => !overlapAt(overlays, { ...o, track: n }))
+    if (tr == null) { toast('这个时间三条画中画轨道都占满了，换个时间再加'); return }
+    setOvSel(o.id); setSelected(null); setTime(t0 + 0.01)
+    applyOverlays([...overlays, { ...o, track: tr }])
+  }
   const editOverlay = (id, patch) => setOvDraft((l) => (l || plan.overlays || []).map((o) => (o.id === id ? { ...o, ...patch } : o)))
   const commitOverlays = (movedId = null) => setTimeout(() => {
     let list = ovRef.current
@@ -578,6 +599,7 @@ export default function App() {
                onAddSticker={addSticker} onApplyStyle={applyStyle} music={{ path: analysis?.music?.path, name: analysis?.music?.name, tempo: analysis?.music?.tempo }}
                songs={songs} onPickSong={(s) => changeMusic(s)} onBrowseMusic={() => changeMusic()} busy={busy} rail={rail}
                clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} onAddOverlay={(p) => addOverlay(p)}
+               onAddGrid={(layout) => addGrid(layout)}
                growTarget={plan.shots[target()]?.grow ? target() + 1 : null}
                onGrow={() => { const i = target(); setSelected(i); applyGrow(i, plan.shots[i].grow ? null : GROW_DEFAULT) }}
                onGrowAll={(on) => growAll(on ? GROW_DEFAULT : null)} growAllOn={plan.shots.every((s) => s.grow)} />
@@ -596,7 +618,9 @@ export default function App() {
 
       {curOv && !shot && (
         <OverlayProps ov={curOv} thumb={clipThumbs[curOv.clip]} pip={pipBox(curOv.clip)} busy={busy} onClose={() => setOvSel(null)}
-                      onChange={(p) => editOverlay(curOv.id, p)} onCommit={() => commitOverlays(curOv.id)} onDelete={() => deleteOverlay(curOv.id)} />
+                      onChange={(p) => editOverlay(curOv.id, p)} onCommit={() => commitOverlays(curOv.id)} onDelete={() => deleteOverlay(curOv.id)}
+                      local={Math.round((time - curOv.t_start) * (plan.fps || 30)) / (plan.fps || 30)} fps={plan.fps || 30} onSeek={setTime}
+                      clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} />
       )}
       {shot && (
         <Properties shot={shot} index={selected} thumb={thumbs?.[selected]} looks={looks}
@@ -619,7 +643,7 @@ export default function App() {
       <Timeline plan={plan} thumbs={thumbs} strips={strips} wave={wave} time={time} onSeek={setTime} selected={selected}
                 onSelect={setSelected} onPlayShot={playShot} onMoveShot={moveShot} aspect={aw / ah}
                 overlays={overlays} ovSel={ovSel} onSelectOverlay={selectOverlay} onOverlayDraft={editOverlay}
-                onOverlayCommit={commitOverlays} onDropClip={addOverlay} clipThumbs={clipThumbs} clipInfo={clipInfo} stickerName={stickerName} styleName={styleName} draft={myDraft} onInOut={onInOut}
+                onOverlayCommit={commitOverlays} onDropClip={addOverlay} onDropGrid={addGrid} clipThumbs={clipThumbs} clipInfo={clipInfo} stickerName={stickerName} styleName={styleName} draft={myDraft} onInOut={onInOut}
                 onCutMove={moveCut} busy={busy} pending={live?.pending || []} live={live} looks={looks}
                 keySel={keySel} onKeySelect={setKeySel} onKeyTime={keyTime} metronome={metronome} setMetronome={setMetronome} />
       {toastsEl}
