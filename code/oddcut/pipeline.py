@@ -25,7 +25,7 @@ import numpy as np
 from . import sticker_stage
 from .analyze import ClipAnalysis, analyze_clip, list_clips
 from .formats import apply_aspect, output_size
-from .looks import DEFAULT_DRAWN_STYLE, check_drawn_style, check_stickers, family_of, sticker_families
+from .looks import DEFAULT_DRAWN_STYLE, check_drawn_style, check_stickers, family_of, sticker_families, sticker_id
 from .music import Music, analyze_music
 from .planner import REUSE_PENALTY, Shot, assign_clips, plan_cuts
 from .progress import Progress, Reporter
@@ -163,7 +163,7 @@ def plan(analysis: Analysis, seed: int = 7, progress: Progress | None = None, st
     st_cfg = tpl.get("stickers", {})
     if analysis.stickers_tagged and st_cfg.get("enabled") and analysis.options.stickers:
         fams = sticker_families(stickers) if stickers is not None else {"object", "animal"}
-        taggable = [c for c in clips if any(t and t[1] in fams for t in c.tags)]
+        taggable = [c for c in clips if ("free" in fams and not c.rejected) or any(t and t[1] in fams for t in c.tags)]
         max_stickers = min(st_cfg["density"]["per_video"][1], len(taggable))
     use_drawn = (tpl.get("drawn_opening", {}).get("enabled") and analysis.options.drawn
                  and any(c.drawable for c in clips))
@@ -218,7 +218,7 @@ def replace_shot(analysis: Analysis, p: Plan, index: int, clip_path: str | None 
         usage[k] = usage.get(k, 0) + 1
     allowed = p.looks.get("stickers")
     families = sticker_families(allowed) if allowed is not None else None
-    placed = {"object": 0, "animal": 0}
+    placed = {"object": 0, "animal": 0, "free": 0}
     for j, sh in enumerate(p.shots):
         if j != index and family_of(sh.sticker) in placed:
             placed[family_of(sh.sticker)] += 1
@@ -230,6 +230,8 @@ def replace_shot(analysis: Analysis, p: Plan, index: int, clip_path: str | None 
             hit = presence(c, s, length) if want_sticker else None
             if hit and families is not None and hit[0] not in families:
                 hit = None
+            if want_sticker and hit is None and families is not None and "free" in families:
+                hit = ("free", None)
             sc = c.window_score(s, length) + (5.0 if hit else 0.0)
             if best is None or sc > best[1]:
                 best = (s, sc, hit[0] if hit else None)
@@ -268,7 +270,9 @@ def replace_shot(analysis: Analysis, p: Plan, index: int, clip_path: str | None 
     role, sticker, drawn = old.role, None, None
     if old.role == "sticker":
         if family:
-            sticker = rule_for(family, placed[family], allowed)
+            used = {k: sum(1 for j, sh in enumerate(p.shots) if j != index and sticker_id(sh.sticker) == k)
+                    for k in allowed or ()}
+            sticker = rule_for(family, placed[family], allowed, used)
         else:
             role = "body"
     elif old.role == "drawn":

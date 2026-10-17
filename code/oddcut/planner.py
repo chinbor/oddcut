@@ -5,7 +5,7 @@ import numpy as np
 
 from .analyze import ClipAnalysis
 from .music import Music
-from .looks import sticker_families
+from .looks import sticker_families, sticker_id
 from .sticker_stage import presence, rule_for
 
 REUSE_PENALTY = 2.0   # a fresh clip should almost always beat reusing one
@@ -172,18 +172,23 @@ def _sticker_candidate(usable, recent, prev_feat, length, lam, usage, rng, last_
     Alternates families (eyes on objects / doodles on animals) so the stickers don't repeat.
     `families`: only these (the ones the selected stickers can sit on); None = any."""
     cands = []
+    free = families is not None and "free" in families
     for c in usable:
-        if any(c is r for r in recent) or not c.tags or id(c) in stickered:   # no repeats
+        if any(c is r for r in recent) or (not c.tags and not free) or id(c) in stickered:   # no repeats
             continue
         for s in c.candidate_starts(length):
             hit = presence(c, s, length)
-            if hit is None or (families is not None and hit[0] not in families):
+            if hit is not None and families is not None and hit[0] not in families:
+                hit = None
+            if hit is None and free:              # nothing to follow: a free-floating decoration
+                hit = ("free", None)
+            if hit is None:
                 continue
             col, subj = c.feature_at(s)
             d = _color_dist(prev_feat[0], col) + 0.5 * float(np.linalg.norm(prev_feat[1] - subj))
             sc = (c.window_score(s, length) + 0.5 * c.stability(s, length)
                   - 0.5 * lam * d - REUSE_PENALTY * usage[id(c)]
-                  - (2.0 if hit[0] == last_family else 0.0))
+                  - (2.0 if hit[0] == last_family else 0.0) - (1.0 if hit[0] == "free" else 0.0))
             cands.append((sc, c, s, hit[0]))
     if not cands:
         return None
@@ -313,7 +318,7 @@ def assign_clips(clips: list[ClipAnalysis], segments, tpl: dict, fps: float, rng
     for c in usable:
         if id(c) in reserved:
             usage[id(c)] = max(usage[id(c)], 1)
-    placed, last_family = {"object": 0, "animal": 0}, None    # stickers so far, per family
+    placed, last_family = {"object": 0, "animal": 0, "free": 0}, None    # stickers so far, per family
     families = sticker_families(stickers) if stickers is not None else None
 
     for k, seg in enumerate(segments[1:-1], start=1):
@@ -330,7 +335,8 @@ def assign_clips(clips: list[ClipAnalysis], segments, tpl: dict, fps: float, rng
                                       {id(sh.clip) for sh in shots if sh.sticker} | reserved, families)
             if pick is not None:
                 c, s, family = pick
-                rule = rule_for(family, placed[family], stickers)
+                rule = rule_for(family, placed[family], stickers,
+                                {k: sum(1 for sh in shots if sticker_id(sh.sticker) == k) for k in stickers or ()})
                 placed[family] += 1
                 last_family = family
                 c.used.append((s, s + length))

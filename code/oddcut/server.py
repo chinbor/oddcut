@@ -231,6 +231,8 @@ def list_looks() -> dict:
 
         from .drawn_reveal import style_preview
         from .looks import DRAWN_STYLES, STICKER_GROUPS, STICKERS
+        from .cartoons import NAMES as CARTOONS
+        from .cartoons import preview as cartoon_preview
         from .stickers import sticker_preview
 
         def url(img) -> str:
@@ -241,7 +243,8 @@ def list_looks() -> dict:
         _LOOKS = {
             "sticker_groups": [{"id": k, "name": v} for k, v in STICKER_GROUPS.items()],
             "stickers": [{"id": s["id"], "name": s["name"], "group": s["group"], "families": list(s["families"]),
-                          "preview": url(sticker_preview(s["id"]))} for s in STICKERS],
+                          "preview": url(cartoon_preview(s["id"]) if s["id"] in CARTOONS
+                                         else sticker_preview(s["id"]))} for s in STICKERS],
             "drawn_styles": [{**d, "preview": url(style_preview(d["id"], 160))} for d in DRAWN_STYLES],
         }
     return _LOOKS

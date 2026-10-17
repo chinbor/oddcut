@@ -16,6 +16,12 @@ const ROLES = {
   breath: ['呼吸镜头', '#5fc9a8'], sticker: ['贴纸', '#ffd166'], outro: ['结尾', '#b18cff'],
 }
 const STICKERS = { eyes: '眼睛', anger: '💢', question: '问号' }
+// "plane@animal" -> 小飞机（跟随）; names come from /api/looks
+const stickerLabel = (sticker, looks) => {
+  const [id, mode] = sticker.split('@')
+  const name = looks.stickers.find((s) => s.id === id)?.name || STICKERS[id] || id
+  return mode ? `${name}（${mode === 'free' ? '装饰' : '跟随'}）` : name
+}
 const ASPECT_NAMES = { '9:16': '竖屏 9:16', '3:4': '3:4', '4:5': '4:5', '1:1': '方形 1:1', '16:9': '横屏 16:9' }
 
 // overall 0..1 for a job: stages run in order, so a later stage means the earlier ones are finished
@@ -232,7 +238,7 @@ export default function App() {
                 {looks.stickers.filter((s) => s.group === g.id).map((s) => (
                   <button key={s.id} className={`tile ${form.stickerSel.includes(s.id) ? 'on' : ''}`}
                           onClick={() => toggleSticker(s.id)} aria-pressed={form.stickerSel.includes(s.id)}
-                          title={s.families.includes('animal') && s.families.includes('object') ? '贴在动物或物体旁'
+                          title={s.families.includes('free') ? '有猫狗、杯子等主体时跟着它动，没有时在画面空白处做装饰动画'
                             : s.families.includes('animal') ? '贴在猫狗等动物头上' : '贴在杯子、碗等物体上'}>
                     <img src={s.preview} alt="" />
                     <span>{s.name}</span>
@@ -324,7 +330,7 @@ export default function App() {
                       <td><i className="chip" style={{ background: ROLES[s.role]?.[1] }} />{ROLES[s.role]?.[0] || s.role}</td>
                       <td>{s.clip}</td>
                       <td>{s.src_start.toFixed(2)}s</td>
-                      <td>{s.sticker ? STICKERS[s.sticker] || s.sticker : s.drawn ? `手绘 ${s.drawn.label}` : ''}</td>
+                      <td>{s.sticker ? stickerLabel(s.sticker, looks) : s.drawn ? `手绘 ${s.drawn.label}` : ''}</td>
                       <td><div className="swap">
                         <button className="mini" disabled={busy} onClick={() => swapShot(i)} title="自动换一段合适的素材">换一个</button>
                         <select disabled={busy} value="" onChange={(e) => e.target.value && swapShot(i, e.target.value)}

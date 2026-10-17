@@ -88,23 +88,39 @@ def presence(clip: ClipAnalysis, start: float, length: float) -> tuple[str, str]
     return window[0][1], max(window, key=lambda t: t[3])[2]
 
 
-def rule_for(family: str, n_so_far: int, allowed=None) -> str | None:
+def rule_for(family: str, n_so_far: int, allowed=None, used=None) -> str | None:
     from .looks import rule_for as pick
-    return pick(family, n_so_far, allowed)
+    return pick(family, n_so_far, allowed, used)
 
 
 def render_sticker_source(path: str, src_start: float, dur: float, rule_name: str,
                           out: Path, aspect: float) -> bool:
     """Crop the shot to the output aspect, track + draw the sticker, write an intermediate clip.
     Returns False (caller falls back to the plain shot) if the target can't be found."""
-    from .stickers import RULES, apply_rule, read_clip, track, write_clip
+    from .stickers import RULES, apply_rule, read_clip, sticker_centers, track, write_clip
     frames, fps = read_clip(path, src_start, dur)
     if len(frames) == 0:
         return False
     T, H, W, _ = frames.shape
     x0, y0, cw, ch = _center_crop_box(W, H, aspect)
     frames = np.ascontiguousarray(frames[:, y0:y0 + ch, x0:x0 + cw])
-    from .stickers import sticker_centers
+    if "@" in rule_name:                        # cartoon object: follow the subject, else free decoration
+        from .cartoons import apply_follow, apply_free, follow_rule, split
+        name, mode = split(rule_name)
+        if mode != "free":
+            rule = follow_rule(mode)
+            try:
+                tr = track(frames, fps, rule)
+                if rule["head"]:
+                    tr.scale = np.minimum(tr.scale, 0.45 * min(cw, ch))
+                _, sizes, visible = sticker_centers(tr, rule, cw, ch)
+                if visible.mean() >= 0.5 and np.median(sizes) >= 0.12 * cw:
+                    write_clip(apply_follow(frames, fps, name, rule, tr, APPEAR), out, fps, cw, ch)
+                    return True
+            except RuntimeError:
+                pass                            # subject not found: still decorate the shot
+        write_clip(apply_free(frames, fps, name, APPEAR), out, fps, cw, ch)
+        return True
     # eyes: a top-down cup puts the default anchor on the coffee surface (tiny eyes); retry on the wall
     attempts = [dict(RULES[rule_name])]
     if rule_name == "eyes":
