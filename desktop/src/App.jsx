@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import Inspector from './Inspector.jsx'
+import StickerOverlay from './StickerOverlay.jsx'
 import Timeline from './Timeline.jsx'
 
 const vc = window.oddcut
@@ -80,6 +81,9 @@ export default function App() {
   const [thumbs, setThumbs] = useState(null)
   const [wave, setWave] = useState(null)
   const [tab, setTab] = useState('shot')
+  const [draft, setDraft] = useState(null)         // sticker being placed on the selected shot (keyframes)
+  const [keySel, setKeySel] = useState(null)       // selected keyframe of the draft
+  const [track, setTrack] = useState(null)         // the draft's path, per frame (from /api/track)
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }))
 
   useEffect(() => {
@@ -179,6 +183,63 @@ export default function App() {
     const s = plan.shots[i]
     if (time < s.t_start || time >= s.t_end) seek(s.t_start + 0.01)
   }
+
+  // the sticker draft follows the selected shot: what the plan has, until the user edits it
+  useEffect(() => {
+    const s = plan && selected != null ? plan.shots[selected] : null
+    setDraft(s?.sticker_at ? { index: selected, id: s.sticker.split('@')[0], ...s.sticker_at } : null)
+    setKeySel(null)
+  }, [plan?.plan, selected])
+  const myDraft = draft && draft.index === selected ? draft : null
+  // the draft differs from what the plan (and so the rendered preview) already has
+  const draftDirty = (() => {
+    const s = myDraft && plan?.shots[selected]
+    if (!s) return false
+    const norm = (d) => d && JSON.stringify([d.id, d.mode, d.keys, d.in || 0, d.out ?? null])
+    return norm(myDraft) !== norm(s.sticker_at ? { id: s.sticker.split('@')[0], ...s.sticker_at } : null)
+  })()
+  const draftKey = myDraft ? JSON.stringify([myDraft.mode, myDraft.keys]) : ''
+  useEffect(() => {
+    setTrack(null)
+    if (!myDraft || !myDraft.keys.length) return
+    const id = setTimeout(() => {
+      vc.api('POST', '/api/track', { plan: plan.plan, index: selected, place: myDraft }).then(setTrack).catch(() => {})
+    }, 120)
+    return () => clearTimeout(id)
+  }, [draftKey, plan?.plan, selected])
+
+  // click on the picture at the playhead: move the keyframe at this moment, or add one; returns its index
+  const placeAt = (x, y) => {
+    const s = plan.shots[selected]
+    const fps = plan.fps || 30
+    const t = Math.round(Math.min(Math.max(0, time - s.t_start), s.t_end - s.t_start - 0.01) * fps) / fps
+    let j = myDraft.keys.findIndex((k) => Math.abs(k.t - t) < 0.5 / fps)
+    const keys = [...myDraft.keys]
+    if (j >= 0) {
+      keys[j] = { ...keys[j], x, y }
+    } else {
+      const f = track ? Math.min(track.frames - 1, Math.round(t * track.fps)) : 0
+      const size = track ? track.size[f] : keys[0]?.size ?? 0.22
+      keys.push({ t, x, y, size })
+      keys.sort((a, b) => a.t - b.t)
+      j = keys.findIndex((k) => k.t === t)
+    }
+    setDraft({ ...myDraft, keys })
+    setKeySel(j)
+    return j
+  }
+  const moveKey = (j, x, y) => setDraft((d) => ({ ...d, keys: d.keys.map((k, i) => (i === j ? { ...k, x, y } : k)) }))
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && keySel != null && myDraft
+          && !['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) {
+        setDraft((d) => ({ ...d, keys: d.keys.filter((_, i) => i !== keySel) }))
+        setKeySel(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [keySel, myDraft])
 
   const applyShot = (index, change) => guard(async () => {
     const r = await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, ...change })
@@ -387,6 +448,12 @@ export default function App() {
                   ) : (
                     <div className="ph">{busy ? (job?.preview ? '正在生成预览…' : job?.kind === 'render' ? '渲染中…' : '处理中…') : '预览会显示在这里'}</div>
                   )}
+                  {myDraft && plan.shots[selected] && (
+                    <StickerOverlay shot={plan.shots[selected]} draft={myDraft} track={track} time={time} aspect={[aw, ah]}
+                                    image={looks.stickers.find((x) => x.id === myDraft.id)?.preview} keySel={keySel}
+                                    onPlace={placeAt} onMoveKey={moveKey} onSelectKey={setKeySel}
+                                    ghost={draftDirty || !shown} />
+                  )}
                   {shown && !video && <span className="badge">预览 · 低清{plan.manual ? '，手动加的效果已包含' : '，自动贴纸 / 手绘在成片里才有'}</span>}
                 </div>
                 <p className="viewer-note">{video ? `${fileName(video.video)} · ${video.duration}s` : '满意的话点「渲染成片」出高清版，带全部贴纸和手绘。'}</p>
@@ -400,7 +467,9 @@ export default function App() {
                 {tab === 'shot' && (selected != null && plan.shots[selected] ? (
                   <Inspector plan={plan} index={selected} looks={looks} usableClips={usableClips} time={time} busy={busy}
                              onSwap={swapShot} onApply={applyShot} onCheck={checkShot} getStill={getStill}
-                             stickerName={(x) => stickerLabel(x, looks)} onClose={() => setSelected(null)} />
+                             stickerName={(x) => stickerLabel(x, looks)} onClose={() => setSelected(null)}
+                             draft={myDraft} setDraft={(d) => setDraft(typeof d === 'function' ? d : d && { ...d, index: selected })}
+                             keySel={keySel} setKeySel={setKeySel} onPlace={placeAt} onSeek={seek} track={track} />
                 ) : (
                   <div className="empty-pane">
                     <p>在下面的时间线上点一个镜头，就能在这里：</p>
@@ -430,6 +499,7 @@ export default function App() {
 
             <Timeline plan={plan} thumbs={thumbs} wave={wave} time={time} onSeek={seek} selected={selected}
                       onSelect={selectShot} stickerName={(x) => stickerLabel(x, looks)}
+                      draft={myDraft} onDraft={setDraft} onKeySelect={setKeySel}
                       styleName={(id) => looks.drawn_styles.find((d) => d.id === (id || 'lineart'))?.name || '线稿上色'} />
           </div>
         )}

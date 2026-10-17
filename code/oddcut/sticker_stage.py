@@ -253,6 +253,39 @@ def sticker_path(frames: np.ndarray, fps: float, place: dict) -> tuple[np.ndarra
     return gaussian_filter1d(centers, 0.8, axis=0, mode="nearest"), sizes
 
 
+_SHOT_FRAMES: dict = {}
+
+
+def shot_frames(path: str, src_start: float, dur: float, aspect: float, out_height: int = 360):
+    """Frames of a shot, cropped to the output aspect and scaled to `out_height` (the timeline editor works on
+    these to draw a sticker's path while it's being placed); the last few shots are kept in memory."""
+    from .stickers import read_clip
+    key = (path, round(src_start, 3), round(dur, 3), round(aspect, 5), out_height)
+    if key not in _SHOT_FRAMES:
+        frames, fps = read_clip(path, src_start, dur)
+        if len(frames) == 0:
+            raise RuntimeError(f"no frames at {src_start}s in {path}")
+        T, H, W, _ = frames.shape
+        x0, y0, cw, ch = _center_crop_box(W, H, aspect)
+        ow = int(round(cw * out_height / ch)) // 2 * 2
+        small = np.stack([cv2.resize(f[y0:y0 + ch, x0:x0 + cw], (ow, out_height), interpolation=cv2.INTER_AREA)
+                          for f in frames])
+        _SHOT_FRAMES[key] = (small, fps)
+        while len(_SHOT_FRAMES) > 6:
+            _SHOT_FRAMES.pop(next(iter(_SHOT_FRAMES)))
+    return _SHOT_FRAMES[key]
+
+
+def preview_path(path: str, src_start: float, dur: float, aspect: float, place: dict) -> dict:
+    """Where a placed sticker will be on every frame of its shot (0..1 of the frame; size as a share of the
+    short side), for drawing its path over the preview while editing. Same code as the render."""
+    frames, fps = shot_frames(path, src_start, dur, aspect)
+    T, H, W, _ = frames.shape
+    centers, sizes = sticker_path(frames, fps, place)
+    return {"fps": fps, "frames": T, "x": np.round(centers[:, 0] / W, 4).tolist(),
+            "y": np.round(centers[:, 1] / H, 4).tolist(), "size": np.round(sizes / min(W, H), 4).tolist()}
+
+
 def render_manual_sticker(path: str, src_start: float, dur: float, sticker: str, place: dict, out: Path,
                           aspect: float, out_height: int | None = None) -> bool:
     """A sticker the user placed (see sticker_path); `place` may also carry `in` / `out` (seconds from the

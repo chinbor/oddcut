@@ -14,6 +14,7 @@ With --parent-pid it exits when that process (the desktop app) goes away.
     GET  /api/thumbs?plan=P          a small picture of every shot (timeline video track)
     GET  /api/still?plan=P&index=I&t=S   one frame of shot I, S seconds in, cropped to the output aspect
     GET  /api/waveform?plan=P        the song under the plan: peaks per 20 ms + beat grid (timeline music track)
+    POST /api/track {plan, index, place}   path of a sticker being placed (per frame, 0..1), right away
     POST /api/jobs                   {"kind": "analyze" | "plan" | "render", ...}  -> {"id": ...}
     GET  /api/jobs/<id>              status, latest progress per stage, result or error
     POST /api/jobs/<id>/cancel       stops the job at its next progress report
@@ -277,6 +278,17 @@ def plan_still(plan_path: Path, index: int, t: float) -> dict:
     return {"image": frame_at(s.clip.path, s.src_start + t, w / h, 640), "t": t}
 
 
+def track_sticker(body: dict) -> dict:
+    from .formats import output_size
+    from .pipeline import _check_place
+    from .sticker_stage import preview_path
+    pl = load_plan(_path(body["plan"]))
+    s = pl.shots[int(body["index"])]
+    w, h = output_size(pl.template)
+    fps = float(pl.template["output"]["fps"])
+    return preview_path(s.clip.path, s.src_start, s.frames / fps + 0.3, w / h, _check_place(body["place"]))
+
+
 _WAVES: dict = {}
 
 
@@ -482,6 +494,12 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self._send(400, {"error": str(e)})
             return self._send(202, {"id": job.id})
+        if parts == ["api", "track"]:
+            try:
+                return self._send(200, track_sticker(body))
+            except Exception as e:  # noqa: BLE001 - reported to the UI
+                traceback.print_exc(file=sys.stderr)
+                return self._send(400, {"error": str(e) or e.__class__.__name__})
         if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "cancel" and parts[2] in JOBS:
             JOBS[parts[2]].cancel()
             return self._send(200, {"ok": True})

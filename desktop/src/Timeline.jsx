@@ -9,7 +9,8 @@ const ROLE_COLORS = {
 }
 const LABEL_W = 56
 
-export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, onSelect, stickerName, styleName }) {
+export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, onSelect, stickerName, styleName,
+                                   draft, onDraft, onKeySelect }) {
   const scroller = useRef(null)
   const canvas = useRef(null)
   const [pps, setPps] = useState(null)          // pixels per second; null = fit the width
@@ -145,17 +146,41 @@ export default function Timeline({ plan, thumbs, wave, time, onSeek, selected, o
 
           <div className="tl-track">
             <label>贴纸</label>
-            {plan.shots.map((s, i) => s.sticker && (
-              <div key={i} className={`blk bar sticker ${s.sticker_at ? 'manual' : ''} ${selected === i ? 'sel' : ''}`}
-                   style={{ left: x(s.t_start + (s.sticker_at?.in || 0)),
-                            width: Math.max(4, ((s.sticker_at?.out ?? (s.t_end - s.t_start)) - (s.sticker_at?.in || 0)) * scale - 2) }}
-                   onPointerDown={(e) => select(i, e)} title={stickerName(s.sticker)}>
-                <span>{stickerName(s.sticker)}{s.sticker_at ? ' ✎' : ''}</span>
-                {(s.sticker_at?.keys || []).map((k, j) => (
-                  <i key={j} className="key" style={{ left: (k.t - (s.sticker_at.in || 0)) * scale - 4 }} />
-                ))}
-              </div>
-            ))}
+            {plan.shots.map((s, i) => {
+              const d = draft && draft.index === i ? draft : null      // being edited: show the draft
+              const at = d || s.sticker_at
+              if (!d && !s.sticker) return null
+              const len = s.t_end - s.t_start
+              const tIn = at?.in || 0
+              const tOut = at?.out ?? len
+              const edge = (e, which) => {
+                e.stopPropagation()
+                e.preventDefault()
+                const el = scroller.current
+                const move = (ev) => {
+                  const r = el.getBoundingClientRect()
+                  const t = Math.min(len, Math.max(0, (ev.clientX - r.left + el.scrollLeft - LABEL_W) / scale - s.t_start))
+                  if (which === 'in') onDraft({ ...d, in: Math.min(t, tOut - 0.2) })
+                  else onDraft({ ...d, out: t >= len - 0.02 ? null : Math.max(t, tIn + 0.2) })
+                }
+                const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+                window.addEventListener('pointermove', move)
+                window.addEventListener('pointerup', up)
+              }
+              return (
+                <div key={i} className={`blk bar sticker ${at ? 'manual' : ''} ${selected === i ? 'sel' : ''} ${d ? 'editing' : ''}`}
+                     style={{ left: x(s.t_start + tIn), width: Math.max(4, (tOut - tIn) * scale - 2) }}
+                     onPointerDown={(e) => select(i, e)} title={d ? '拖两端改出现 / 消失的时间' : stickerName(s.sticker)}>
+                  {d && <i className="edge l" onPointerDown={(e) => edge(e, 'in')} />}
+                  <span>{d ? (s.sticker && s.sticker.split('@')[0] === d.id ? stickerName(s.sticker) : '新贴纸') : stickerName(s.sticker)}{at ? ' ✎' : ''}</span>
+                  {(at?.keys || []).map((k, j) => (
+                    <i key={j} className="key" style={{ left: (k.t - tIn) * scale - 4 }} title={`关键帧 ${k.t.toFixed(2)}s`}
+                       onPointerDown={(e) => { e.stopPropagation(); if (selected !== i) onSelect(i); onKeySelect?.(j); onSeek(s.t_start + k.t + 0.001) }} />
+                  ))}
+                  {d && <i className="edge r" onPointerDown={(e) => edge(e, 'out')} />}
+                </div>
+              )
+            })}
           </div>
 
           <div className="tl-track">

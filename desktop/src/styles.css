@@ -212,3 +212,25 @@ button.mini { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
   .viewer .preview { --max-h: 40vh; }
   .side-pane { max-height: none; }
 }
+
+/* ---------------------------------------------------------------- sticker path editing (phase B) */
+.sticker-overlay { position: absolute; inset: 0; z-index: 2; cursor: crosshair; touch-action: none; user-select: none; }
+.sticker-overlay.away { cursor: default; background: rgba(0, 0, 0, 0.25); }
+.sticker-overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.sticker-overlay polyline { fill: none; stroke: #ffd166; stroke-width: 0.6; stroke-dasharray: 1.6 1; vector-effect: non-scaling-stroke;
+  stroke-width: 2px; filter: drop-shadow(0 0 1px #000); }
+.kf { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #fff;
+  border: 2px solid #1a1310; cursor: grab; box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.5); }
+.kf.sel { background: var(--accent); }
+.kf.now { box-shadow: 0 0 0 4px rgba(255, 122, 89, 0.7); }
+.overlay-note { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); padding: 3px 10px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.65); font-size: 12px; white-space: nowrap; pointer-events: none; }
+.keys { display: flex; flex-direction: column; gap: 3px; }
+.key-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-radius: 6px; background: var(--panel-2); cursor: pointer; font-size: 12px; }
+.key-row small { color: var(--muted); flex: 1; }
+.key-row.sel { outline: 1px solid var(--accent); }
+.blk.editing { background: #f0c95e; box-shadow: inset 0 0 0 2px #fff; overflow: visible; }
+.blk .edge { position: absolute; top: -2px; bottom: -2px; width: 8px; background: #fff; border-radius: 3px; cursor: ew-resize; z-index: 2; }
+.blk .edge.l { left: -3px; }
+.blk .edge.r { right: -3px; }
+.blk .key { cursor: pointer; z-index: 1; }
