@@ -119,7 +119,7 @@ def _grow_parts(shots: list[Shot], parts: list, sources: list, music, work_dir: 
                 grade: str, fade: float, preview: bool, cache: Path | None, mode: str, report: Reporter) -> None:
     """Replace the opening of every shot with .grow by its 万物生长 transition (growth.py): the previous shot
     carries on underneath (rendered on from where it was cut, same look), the new one's layers rise over it."""
-    todo = [i for i, s in enumerate(shots) if s.grow]
+    todo = [i for i, s in enumerate(shots) if s.grow and not s.grow.get("off")]
     if not todo:
         return
     from .growth import render_grow, timing

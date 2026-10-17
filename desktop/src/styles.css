@@ -472,3 +472,11 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .anim-wedge.out { right: 0; background: linear-gradient(270deg, rgba(255,255,255,.35), transparent); border-radius: 0 6px 6px 0; }
 .bar-grid { width: 18px; height: 18px; flex: none; background: linear-gradient(#fff, #fff) 0 0 / 8px 8px no-repeat, linear-gradient(#fff, #fff) 10px 0 / 8px 8px no-repeat, linear-gradient(#fff, #fff) 0 10px / 8px 8px no-repeat, linear-gradient(#fff, #fff) 10px 10px / 8px 8px no-repeat; opacity: .85; }
 .props .style-chips button { padding: 5px 10px; font-size: 12.5px; }
+
+.fx-picks { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.fx-picks-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
+.fx-pick { justify-content: flex-start; gap: 8px; padding: 7px 10px; text-align: left; font-size: 12.5px; }
+.fx-pick small { line-height: 1.4; }
+.fx-pick-n { flex: none; color: #4fc79a; font-weight: 600; }
+.grow-why { color: #8fdcbd; }
+.grow-mark.auto { background: repeating-linear-gradient(90deg, rgba(79,199,154,.95) 0 6px, rgba(79,199,154,.55) 6px 9px); }

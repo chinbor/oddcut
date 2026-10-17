@@ -9,7 +9,7 @@ const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
 // drawing styles (click = draw the selected shot), music (switch the song).
 export default function Library({ looks, activeSticker, activeStyle, onAddSticker, onApplyStyle, music, songs, onPickSong,
                                   onBrowseMusic, busy, rail, clips = [], clipThumbs = {}, onAddOverlay, growTarget, onGrow,
-                                  onGrowAll, growAllOn, onAddGrid }) {
+                                  onGrowAll, growAllOn, onAddGrid, onAutoGrow, grownShots = [], onSeekShot }) {
   const [tab, setTab] = useState('sticker')
   const [open, setOpen] = useState(false)          // icon-rail mode: the panel flies out
   const show = !rail || open
@@ -107,6 +107,15 @@ export default function Library({ looks, activeSticker, activeStyle, onAddSticke
                   <small>把画面按里面的东西分成几层（人和物 → 地面 → 中景 → 天空），一层一层踩着节拍从下往上长出来，盖住上一个镜头</small>
                 </span>
               </button>
+              <div className="fx-picks">
+                <div className="fx-picks-head"><b>用了万物生长的镜头</b>
+                  <button className="link" disabled={busy} onClick={onAutoGrow} title="按画面层次、主体完整、镜头稳定和节拍重新挑（你手动开关过的镜头不变）">重新自动挑选</button></div>
+                {grownShots.length ? grownShots.map((g) => (
+                  <button key={g.n} className="fx-pick" onClick={() => onSeekShot(g.n)}>
+                    <span className="fx-pick-n">镜头 {g.n}</span><small>{g.auto ? `自动：${g.why || '画面合适'}` : '你手动加的'}</small>
+                  </button>
+                )) : <p className="caption">还没有。点「重新自动挑选」，或选中一个镜头后点上面的卡片。</p>}
+              </div>
               <label className="switch-row fx-all">
                 <span><b>全片都用</b><small>每个镜头都这样长出来，第一个从黑底长出</small></span>
                 <input type="checkbox" className="switch" checked={!!growAllOn} disabled={busy} onChange={(e) => onGrowAll(e.target.checked)} />

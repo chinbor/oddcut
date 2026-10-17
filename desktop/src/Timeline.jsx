@@ -424,10 +424,11 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                      title={`镜头 ${i + 1} · ${s.clip} · ${(s.t_end - s.t_start).toFixed(1)} 秒（点一下单独播放，左右拖动调换顺序）`}>
                   <div className="strip">{filmstrip(i, w).map((src, k) => <img key={k} src={src} alt="" draggable={false} />)}</div>
                   <span className="num">{i + 1}</span>
-                  {s.grow && (() => {
+                  {s.grow && !s.grow.off && (() => {
                     const g = growTiming(s.t_end - s.t_start, plan.beat || 60 / (wave?.tempo || 120), s.grow.layers, s.grow.stagger)
                     return (
-                      <span className="grow-mark" style={{ width: g.land * scale }} title={`万物生长：${s.grow.layers} 层，${s.grow.stagger === 'beat' ? '一拍' : '半拍'}一层，${g.land.toFixed(2)} 秒长完`}>
+                      <span className={`grow-mark ${s.grow.source === 'auto' ? 'auto' : ''}`} style={{ width: g.land * scale }}
+                            title={`万物生长${s.grow.source === 'auto' ? `（自动：${s.grow.why || '画面合适'}）` : ''}：${s.grow.layers} 层，${s.grow.stagger === 'beat' ? '一拍' : '半拍'}一层，${g.land.toFixed(2)} 秒长完`}>
                         {g.starts.map((st, k) => <i key={k} style={{ left: st * scale }} />)}
                       </span>
                     )

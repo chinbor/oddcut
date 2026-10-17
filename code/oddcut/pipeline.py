@@ -312,18 +312,124 @@ def _check_place(place: dict) -> dict:
 
 
 def check_grow(g: dict) -> dict:
-    """万物生长 settings: layers 3 or 4, a layer every beat or half-beat, motion blur 0..1.5."""
+    """万物生长 settings: layers 3 or 4, a layer every beat or half-beat, motion blur 0..1.5; source auto / manual
+    (a manual choice wins over the automatic pick and survives a new plan); {"off": true} = turned off by hand."""
+    source = g.get("source", "manual") if g.get("source") in ("auto", "manual") else "manual"
+    if g.get("off"):
+        return {"off": True, "source": "manual"}
     stagger = g.get("stagger", "beat")
     if stagger not in ("beat", "half"):
         raise ValueError(f"unknown stagger {stagger!r}")
-    return {"layers": 4 if int(g.get("layers", 3)) >= 4 else 3, "stagger": stagger,
-            "blur": round(min(1.5, max(0.0, float(g.get("blur", 1.0)))), 2)}
+    out = {"layers": 4 if int(g.get("layers", 3)) >= 4 else 3, "stagger": stagger,
+           "blur": round(min(1.5, max(0.0, float(g.get("blur", 1.0)))), 2), "source": source}
+    if g.get("why"):
+        out["why"] = str(g["why"])[:80]
+    return out
+
+
+def grows(s: Shot) -> bool:
+    """Does this shot grow in (万物生长 on and not turned off by hand)?"""
+    return bool(s.grow) and not s.grow.get("off")
 
 
 def grow_all(p: Plan, g: dict | None) -> Plan:
     """全片万物生长: every shot grows in (the first out of black), or none does (g=None)."""
-    g = check_grow(g) if g else None
+    g = check_grow({**g, "source": "manual"}) if g else None
     return replace(p, shots=[replace(s, grow=g) for s in p.shots])
+
+
+def _downbeats(m) -> np.ndarray:
+    """True at grid points that are a bar's first beat (4/4; the phase whose beats hit hardest, as the app's
+    timeline shows them)."""
+    on = np.asarray(m.on_beat, bool)
+    full = np.nonzero(on)[0]
+    out = np.zeros(len(on), bool)
+    if not len(full):
+        return out
+    st = np.asarray(m.strength, float)
+    phase = max(range(4), key=lambda q: st[full[q::4]].mean() if len(full[q::4]) else 0)
+    out[full[phase::4]] = True
+    return out
+
+
+def auto_grow(analysis: Analysis, p: Plan, cache_file: Path | None = None, progress=None
+              ) -> tuple[Plan, list[str], list[dict]]:
+    """万物生长 only where it fits: every cut is scored (growth.score_shot: layers, a whole subject, a steady
+    camera, contrast between the layers; plus the beat it falls on) and the best 1-3 (about one per 9 s) above
+    the bar get it, never two cuts in a row. Choices made by hand (on or off) stay as they are. Returns the plan,
+    notes and a report per shot (score, picked, why / why not)."""
+    from .formats import output_size
+    from .growth import AUTO_EVERY, AUTO_MAX, AUTO_THRESHOLD, score_shot
+    from .render import effect_rev
+    w, h = output_size(p.template)
+    aspect = w / h
+    cache = {}
+    if cache_file and cache_file.exists():
+        try:
+            cache = json.loads(cache_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+    rev = effect_rev("grow")
+    m = analysis.music
+    grid, strength, down = m.grid, np.asarray(m.strength, float), _downbeats(m)
+    report = []
+    for i, s in enumerate(p.shots):
+        key = f"{_norm(s.clip.path)}|{s.src_start:.2f}|{aspect:.4f}|{rev}"
+        if key not in cache:
+            cache[key] = score_shot(s.clip.path, s.src_start, aspect)
+        if progress:
+            progress(i + 1, len(p.shots))
+        sc = cache[key]
+        if i == 0:
+            beat, beat_why = 1.0, "开场"
+        else:
+            g = int(np.argmin(np.abs(grid - s.t_start)))
+            beat = float(0.6 * strength[g] + 0.4 * down[g])
+            beat_why = "正好在重拍上" if down[g] else ("踩在强拍上" if strength[g] > 0.6 else "")
+        total = 0.75 * sc["visual"] + 0.25 * beat
+        report.append({"index": i, "score": round(total, 3), "visual": sc["visual"], "beat": round(beat, 3),
+                       "parts": {k: sc.get(k) for k in ("layers", "whole", "steady", "contrast", "penalty")},
+                       "why": "，".join(x for x in (sc.get("why"), beat_why) if x), "why_not": sc.get("why_not", ""),
+                       "picked": False})
+    if cache_file:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    manual_on = {i for i, s in enumerate(p.shots) if s.grow and s.grow.get("source") == "manual" and not s.grow.get("off")}
+    fixed = {i for i, s in enumerate(p.shots) if s.grow and s.grow.get("source") == "manual"}
+    k = min(AUTO_MAX, max(1, round(p.duration / AUTO_EVERY))) - len(manual_on)
+    picked: list[int] = []
+    for r in sorted(report, key=lambda r: -r["score"]):
+        i = r["index"]
+        if len(picked) >= k or r["score"] < AUTO_THRESHOLD:
+            break
+        if i in fixed or p.shots[i].drawn or any(abs(i - j) <= 1 for j in picked + sorted(manual_on)):
+            continue
+        picked.append(i)
+        r["picked"] = True
+    shots = []
+    for i, s in enumerate(p.shots):
+        if i in fixed:
+            shots.append(s)
+        elif i in picked:
+            beat_len = float(m.beat_period)
+            shots.append(replace(s, grow={"layers": 3, "stagger": "beat" if beat_len >= 0.38 else "half", "blur": 1.0,
+                                          "source": "auto", "why": report[i]["why"][:80]}))
+        else:
+            shots.append(replace(s, grow=None))
+    notes = [f"自动给 {len(picked)} 个镜头加了万物生长" if picked else "没有特别适合万物生长的镜头，这次没有自动加"]
+    return replace(p, shots=shots), notes, report
+
+
+def grow_hint(analysis: Analysis, p: Plan, index: int, cache_file: Path | None = None) -> str | None:
+    """When a shot is turned on by hand: a short warning if it doesn't suit growing in."""
+    from .formats import output_size
+    from .growth import AUTO_THRESHOLD, score_shot
+    w, h = output_size(p.template)
+    s = p.shots[index]
+    sc = score_shot(s.clip.path, s.src_start, w / h)
+    if sc["visual"] >= AUTO_THRESHOLD * 0.9 or not sc.get("why_not"):
+        return None
+    return f"这个镜头不太适合万物生长（{sc['why_not']}），效果可能不明显"
 
 
 def edit_shot(analysis: Analysis, p: Plan, index: int, sticker=KEEP, drawn=KEEP, grow=KEEP) -> tuple[Plan, list[str]]:
@@ -341,6 +447,10 @@ def edit_shot(analysis: Analysis, p: Plan, index: int, sticker=KEEP, drawn=KEEP,
     notes: list[str] = []
     if grow is not KEEP:
         s.grow = check_grow(grow) if grow else None
+        if s.grow and not s.grow.get("off"):
+            hint = grow_hint(analysis, p, index)
+            if hint:
+                notes.append(hint)
     if sticker is not KEEP:
         if sticker is None:
             s.sticker, s.sticker_at = None, None
@@ -702,10 +812,23 @@ def retime(analysis: Analysis, p: Plan) -> tuple[Plan, list[str]]:
     return replace(p, shots=shots, music=music, looks=looks), notes
 
 
+def _overlap(a: Shot, b: Shot) -> float:
+    """Seconds of the same footage two shots share."""
+    if _norm(a.clip.path) != _norm(b.clip.path):
+        return 0.0
+    return min(a.src_start + (a.t_end - a.t_start), b.src_start + (b.t_end - b.t_start)) - max(a.src_start, b.src_start)
+
+
 def carry_manual(old: Plan, new: Plan, analysis: Analysis) -> tuple[Plan, list[str]]:
     """Hand edits of `old` re-applied to `new` (another song or plan): each goes to the new shot that shows the
     same footage (same clip, overlapping time in it). Ones that no longer have a home are dropped and listed."""
     notes, dropped = [], 0
+    for s in old.shots:                           # 万物生长 turned on / off by hand: the shot with that footage
+        if not (s.grow and s.grow.get("source") == "manual"):
+            continue
+        best = max(range(len(new.shots)), key=lambda j: _overlap(s, new.shots[j]), default=None)
+        if best is not None and _overlap(s, new.shots[best]) > 0:
+            new = replace(new, shots=[replace(n, grow=dict(s.grow)) if j == best else n for j, n in enumerate(new.shots)])
     for s in old.shots:
         manual_drawn = bool(s.drawn and s.drawn.get("manual"))
         if not (s.sticker_at or manual_drawn):

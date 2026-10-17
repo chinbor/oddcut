@@ -472,3 +472,94 @@ def render_grow(new_part: Path, prev_part: Path | None, out: Path, fps: float, w
     if proc.returncode:
         raise RuntimeError("ffmpeg failed while encoding the growth transition")
     return out
+
+
+# ----------------------------------------------------------------------------- where it fits (自动挑选)
+
+AUTO_THRESHOLD = 0.58          # a cut needs at least this score to get 万物生长 automatically
+AUTO_EVERY = 9.0               # about one per this many seconds of film, at most AUTO_MAX
+AUTO_MAX = 3
+
+
+def _frame(path: str, t: float, aspect: float, height: int = SEG_H) -> np.ndarray | None:
+    """One frame of a clip, centre-cropped to the output shape, as the render shows it (RGB)."""
+    w = max(2, int(round(height * aspect)) // 2 * 2)
+    vf = f"crop=w='min(iw,ih*{aspect:.6f})':h='min(ih,iw/{aspect:.6f})',scale={w}:{height}"
+    r = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", path, "-frames:v", "1", "-vf", vf,
+                        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdin=subprocess.DEVNULL, capture_output=True)
+    if len(r.stdout) < w * height * 3:
+        return None
+    return np.frombuffer(r.stdout[:w * height * 3], np.uint8).reshape(height, w, 3)
+
+
+def score_shot(path: str, src_start: float, aspect: float) -> dict:
+    """How well a shot suits growing in, from its first frames (0..1 per part, see AUTO_THRESHOLD):
+    layers (clear ground / middle / top, sky or open top), whole (a complete thing standing in the lower half),
+    steady (camera calm and sharp at the rise), contrast (the layers look different, so the rise reads), and
+    the penalties for dark shots, close-ups and flat walls."""
+    a = _frame(path, src_start + 0.04, aspect)
+    b = _frame(path, src_start + 0.34, aspect)
+    if a is None:
+        return {"visual": 0.0, "why_not": "读不到画面"}
+    h, w = a.shape[:2]
+    things = _things(a)
+    depth = depth_map(a)
+    if depth is not None:
+        things = things + _depth_things(depth, things)
+    own, names, _ = plan_layers(a, 3, things, depth)
+    parts = sum(1 for m in own if m.mean() >= 0.05)
+    sky = any("sky" in n for n in names)
+    drange = float(np.percentile(depth, 90) - np.percentile(depth, 10)) if depth is not None else 0.5
+    layers = 0.4 * min(1.0, parts / 3) + 0.3 * sky + 0.3 * min(1.0, drange / 0.6)
+    whole_things = []
+    for m in things:
+        ys, xs = np.nonzero(m)
+        if not len(ys):
+            continue
+        edge = xs.min() <= 1 or xs.max() >= w - 2 or ys.min() <= 1
+        if not edge and ys.max() > 0.5 * h and 0.03 <= m.mean() <= 0.4:
+            whole_things.append(m)
+    whole = 1.0 if whole_things else (0.4 if things else 0.0)
+    g0 = cv2.cvtColor(a, cv2.COLOR_RGB2GRAY)
+    steady = 1.0
+    if b is not None:
+        g1 = cv2.cvtColor(b, cv2.COLOR_RGB2GRAY)
+        small0, small1 = (cv2.resize(g, (w // 2, h // 2)) for g in (g0, g1))
+        flow = cv2.calcOpticalFlowFarneback(small0, small1, None, 0.5, 3, 15, 3, 5, 1.1, 0)
+        motion = float(np.median(np.hypot(flow[..., 0], flow[..., 1]))) / (w / 2)
+        steady = float(np.clip(1 - motion / 0.03, 0, 1))
+    sharp = float(np.clip(cv2.Laplacian(g0, cv2.CV_32F).var() / 120, 0, 1))
+    steady = 0.7 * steady + 0.3 * sharp
+    means = [a[m].mean(0) for m in own if m.sum() > 50]
+    diffs = [float(np.abs(x - y).mean()) for i, x in enumerate(means) for y in means[i + 1:]]
+    contrast = float(np.clip((np.mean(diffs) if diffs else 0) / 40, 0, 1))
+    visual = 0.3 * layers + 0.25 * whole + 0.2 * steady + 0.25 * contrast
+    bright = float(cv2.cvtColor(a, cv2.COLOR_RGB2HSV)[..., 2].mean() / 255)
+    union = np.zeros((h, w), bool)
+    for m in things:
+        union |= m
+    biggest = max((m.mean() for m in things), default=0.0)
+    edges = float((cv2.Canny(g0, 60, 150) > 0).mean())
+    penalty, why_not = 1.0, []
+    if bright < 0.22:
+        penalty *= 0.4; why_not.append("画面太暗")
+    if biggest > 0.45 or union.mean() > 0.6:
+        penalty *= 0.5; why_not.append("是特写，分不出前后层")
+    if drange < 0.25 and edges < 0.04:
+        penalty *= 0.5; why_not.append("画面太平，没有层次")
+    if steady < 0.45:
+        why_not.append("镜头晃动或模糊")
+    if whole < 1.0:
+        why_not.append("没有完整站在画面里的主体")
+    if parts < 3:
+        why_not.append("分不出三层")
+    reasons = []
+    if parts >= 3:
+        reasons.append("、".join(n for n in (("人和物" if whole_things else None), "地面", ("天空" if sky else "远景")) if n) + "层次清楚")
+    if whole_things:
+        reasons.append("主体完整")
+    if steady >= 0.7:
+        reasons.append("镜头稳")
+    return {"layers": round(layers, 3), "whole": round(whole, 3), "steady": round(steady, 3), "contrast": round(contrast, 3),
+            "penalty": round(penalty, 3), "visual": round(visual * penalty, 3), "why": "，".join(reasons),
+            "why_not": "，".join(why_not)}

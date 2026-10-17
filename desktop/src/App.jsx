@@ -21,6 +21,7 @@ const STAGES = {
   plan: [['cuts', 1, '排镜头']], music: [['music', 1, '分析新音乐']], edit: [['edit', 1, '换素材']], shot: [['edit', 1, '应用修改']],
   cut: [['edit', 1, '调整切点']], retime: [['edit', 1, '对齐新节拍']], check: [['check', 1, '看这个镜头能不能画']],
   render: [['effects', 0.5, '渲染贴纸和手绘'], ['shots', 0.45, '渲染镜头'], ['mux', 0.05, '合成音乐']],
+  grow_auto: [['score', 1, '挑适合万物生长的镜头']],
 }
 function progressOf(job) {
   if (!job) return null
@@ -36,7 +37,7 @@ export default function App() {
   const [templates, setTemplates] = useState([])
   const [looks, setLooks] = useState({ stickers: [], sticker_groups: [], drawn_styles: [] })
   const [view, setView] = useState('new')
-  const [form, setForm] = useState({ clips: '', music: '', template: '', aspect: '9:16', duration: 18, autoStickers: true, drawn: true, grow: false })
+  const [form, setForm] = useState({ clips: '', music: '', template: '', aspect: '9:16', duration: 18, autoStickers: true, drawn: true, autoGrow: true })
   const [folderInfo, setFolderInfo] = useState(null)
   const [analysis, setAnalysis] = useState(null)
   const [plan, setPlan] = useState(null)
@@ -187,10 +188,15 @@ export default function App() {
     const a = await runJob({ kind: 'analyze', clips: form.clips, music: form.music, template: form.template, aspect: form.aspect,
                              duration: Number(form.duration), stickers: form.autoStickers, drawn: form.drawn })
     setAnalysis(a)
-    const p = await runJob({ kind: 'plan', analysis: a.analysis, stickers: form.autoStickers ? allStickers() : [], grow: form.grow ? GROW_DEFAULT : null })
+    const p = await runJob({ kind: 'plan', analysis: a.analysis, stickers: form.autoStickers ? allStickers() : [] })
     setPast([]); setFuture([]); setSelected(null); setTime(0); setPreviewSrc(null)
     setView('editor')
     loadPlan(p)
+    if (form.autoGrow) {                                 // 万物生长 only where it fits, picked right after
+      const g = await runJob({ kind: 'grow_auto', analysis: a.analysis, plan: p.plan })
+      loadPlan(g)
+      toast(g.notes.join('；'))
+    }
     const rejected = a.clips.filter((c) => c.rejected)
     if (rejected.length) toast(`${rejected.length} 段素材没用上：${rejected.map((c) => `${c.name}（${c.reason}）`).join('，')}`)
   })
@@ -201,8 +207,13 @@ export default function App() {
   const localT = (i) => { const s = plan.shots[i]; const fps = plan.fps || 30; return Math.round(Math.min(Math.max(0, time - s.t_start), s.t_end - s.t_start - 0.01) * fps) / fps }
   const applyShot = guard(async (index, change) => commit(await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, ...change })))
   const swapShot = guard(async (index, clip) => commit(await runJob({ kind: 'edit', analysis: analysis.analysis, plan: plan.plan, index, clip })))
-  // 万物生长 into one shot (cfg = settings, null = off) or into all of them
+  // 万物生长 into one shot (cfg = settings, {off} = turned off by hand) or into all of them
+  const grownAt = (i) => { const g = plan?.shots[i]?.grow; return !!g && !g.off }
   const applyGrow = guard(async (index, cfg) => commit(await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, grow: cfg })))
+  const autoGrow = guard(async () => {
+    const r = await runJob({ kind: 'grow_auto', analysis: analysis.analysis, plan: plan.plan })
+    commit(r)
+  })
   const growAll = guard(async (cfg) => {
     commit(await runJob({ kind: 'grow', plan: plan.plan, grow: cfg }))
     toast(cfg ? '全片都用了万物生长：每个镜头都会从下往上长出来' : '已去掉全片的万物生长')
@@ -600,9 +611,11 @@ export default function App() {
                songs={songs} onPickSong={(s) => changeMusic(s)} onBrowseMusic={() => changeMusic()} busy={busy} rail={rail}
                clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} onAddOverlay={(p) => addOverlay(p)}
                onAddGrid={(layout) => addGrid(layout)}
-               growTarget={plan.shots[target()]?.grow ? target() + 1 : null}
-               onGrow={() => { const i = target(); setSelected(i); applyGrow(i, plan.shots[i].grow ? null : GROW_DEFAULT) }}
-               onGrowAll={(on) => growAll(on ? GROW_DEFAULT : null)} growAllOn={plan.shots.every((s) => s.grow)} />
+               growTarget={grownAt(target()) ? target() + 1 : null}
+               onGrow={() => { const i = target(); setSelected(i); applyGrow(i, grownAt(i) ? { off: true } : GROW_DEFAULT) }}
+               onGrowAll={(on) => growAll(on ? GROW_DEFAULT : null)} growAllOn={plan.shots.every((s) => s.grow && !s.grow.off)}
+               onAutoGrow={autoGrow} grownShots={plan.shots.map((s, i) => (s.grow && !s.grow.off ? { n: i + 1, auto: s.grow.source === 'auto', why: s.grow.why } : null)).filter(Boolean)}
+               onSeekShot={(n) => { setSelected(n - 1); setTime(plan.shots[n - 1].t_start + 0.01) }} />
 
       <Viewer src={previewSrc && mediaUrl(previewSrc)} videoRef={videoRef} time={time} onTime={setTime} playing={playing} setPlaying={setPlaying}
               duration={plan.duration} fps={plan.fps || 30} aspect={[aw, ah]} shot={shot} draft={myDraft} track={track}

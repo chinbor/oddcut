@@ -32,6 +32,7 @@ Job parameters (paths are absolute or relative to the project root):
     shot     analysis, plan, index, [sticker], [drawn]  -> like plan + "notes"; hand edits of one shot
     overlays analysis, plan, overlays  -> like plan; the picture-in-picture clips (whole list, see pipeline)
     grow     plan, grow                -> like plan; 万物生长 into every shot ({layers, stagger, blur}) or none (null)
+    grow_auto analysis, plan          -> like plan + grow_report; 万物生长 only on the 1-3 cuts it suits best
              (one shot: "shot" with grow; a new plan: "plan" with grow)
     move     analysis, plan, src, dst  -> like plan; shot src moved to position dst, cuts re-snapped to beats
              sticker: null | {id, mode: follow | fixed, keys: [{t, x, y, size}], in, out}
@@ -65,7 +66,7 @@ from . import __version__
 from .formats import ASPECTS
 from .paths import OUTPUT_DIR, PROJECT_ROOT, TEMPLATE_DIR
 from .pipeline import (KEEP, Options, analyze, carry_manual, edit_shot, has_manual, load_analysis, load_plan, move_cut, move_shot,
-                       plan, render_plan, replace_shot, retime, save_analysis, save_plan, set_overlays, with_music, grow_all)
+                       plan, render_plan, replace_shot, retime, save_analysis, save_plan, set_overlays, with_music, grow_all, auto_grow)
 from .progress import ProgressEvent
 
 APP_DIR = OUTPUT_DIR / "app"
@@ -218,10 +219,14 @@ def run_plan(job: Job) -> dict:
         pl, notes = carry_manual(load_plan(_path(p["carry_from"])), pl, a)
     if p.get("grow"):
         pl = grow_all(pl, p["grow"])
+    report = None
+    if p.get("grow_auto"):
+        pl, more, report = auto_grow(a, pl, CACHE_DIR / "grow_scores.json")
+        notes = notes + more
     work = _path(p.get("work")) or analysis_path.parent
     out = _unique(work / f"plan_{seed}.json")
     save_plan(pl, out)
-    return _plan_result(pl, out, notes)
+    return {**_plan_result(pl, out, notes), "grow_report": report}
 
 
 def run_shot(job: Job) -> dict:
@@ -275,7 +280,7 @@ def run_live(job: Job) -> dict:
         job.on_progress(ProgressEvent("live", "effects", n + 1, len(pending)))   # raises if cancelled
         job.partial = {"video": str(publish(f"fx{n + 1}")) if ok else job.partial["video"], "done": n + 1,
                        "total": len(pending), "pending": pending[n + 1:], "failed": failed}
-    grow = [i for i, s in enumerate(pl.shots) if s.grow]
+    grow = [i for i, s in enumerate(pl.shots) if s.grow and not s.grow.get("off")]
     if grow:                                  # 万物生长 transitions: one more pass that renders the missing ones
         total = len(pending) + 1
         job.partial = {**job.partial, "total": total, "pending": grow}
@@ -330,6 +335,19 @@ def clip_thumbs(analysis_path: Path) -> dict:
     with ThreadPoolExecutor(8) as ex:
         pics = list(ex.map(lambda c: frame_at(c.path, min(1.0, c.duration * 0.3), c.width / c.height, 120), clips))
     return {"thumbs": {c.path: p for c, p in zip(clips, pics)}}
+
+
+def run_grow_auto(job: Job) -> dict:
+    """Pick the cuts 万物生长 suits (pipeline.auto_grow); hand-made choices stay."""
+    p = job.params
+    plan_path = _path(p["plan"])
+    job.on_progress(ProgressEvent("grow", "score", 0, 1))
+    pl, notes, report = auto_grow(load_analysis(_path(p["analysis"])), load_plan(plan_path), CACHE_DIR / "grow_scores.json",
+                                  lambda n, total: job.on_progress(ProgressEvent("grow", "score", n, total)))
+    job.on_progress(ProgressEvent("grow", "score", 1, 1))
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return {**_plan_result(pl, out, notes), "grow_report": report}
 
 
 def run_grow(job: Job) -> dict:
@@ -517,7 +535,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "grow": run_grow, "retime": run_retime, "live": run_live}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None
