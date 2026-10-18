@@ -479,6 +479,17 @@ export default function App() {
     commit(await runJob({ kind: 'delete', analysis: analysis.analysis, plan: plan.plan, music: true }))
     toast('音乐已删除。想换一首：把「音乐」里的歌拖到音乐轨道上')
   })
+  // a song dropped on the music track: the edit stays exactly as it is, only the music changes (as in 剪映)
+  const swapMusic = guard(async (music) => {
+    const before = snapshot()
+    const a = await runJob({ kind: 'music', analysis: analysis.analysis, music, duration: Number(form.duration) })
+    const p = await runJob({ kind: 'swap_music', analysis: a.analysis, plan: plan.plan })
+    setPast((h) => [...h.slice(-49), before]); setFuture([])
+    setAnalysis(a)
+    setForm((f) => ({ ...f, music }))
+    loadPlan(p)
+    toast(`音乐换成了 ${a.music.name}（${Math.round(a.music.tempo)} BPM），剪辑没有动`)
+  })
   const removeClip = guard(async (path) => {
     const used = plan.shots.some((s) => s.clip_path === path) || overlays.some((o) => o.clip === path)
     if (used && !window.confirm('素材已被使用，同时删除时间线上的片段？')) return
@@ -848,7 +859,7 @@ export default function App() {
                 onPasteAt={(t, track) => clipboard && pasteAt(clipboard.o, Math.max(0, Math.min(t, plan.duration - 0.3)), track)}
                 onDeleteOverlay={deleteOverlay} onResize={resizeTl} onInsertClip={insertClip} onDeleteShot={deleteShot}
                 musicSel={musicSel} onSelectMusic={() => { setSelected(null); setOvSel(null); setMusicSel(true) }} onDeleteMusic={deleteMusic}
-                onDropMusic={(p) => changeMusic(p)} busy={busy} pending={live?.pending || []} live={live} looks={looks}
+                onDropMusic={swapMusic} busy={busy} pending={live?.pending || []} live={live} looks={looks}
                 keySel={keySel} onKeySelect={setKeySel} onKeyTime={keyTime} metronome={metronome} setMetronome={setMetronome} />
       {toastsEl}
     </div>

@@ -457,6 +457,18 @@ def run_delete(job: Job) -> dict:
     return _plan_job(job, go)
 
 
+def run_swap_music(job: Job) -> dict:
+    """换音乐 as in 剪映: the plan keeps every shot, 画中画, sticker and keyframe as edited; only the song under it
+    changes (the analysis' new music: its beats show on the timeline for snapping)."""
+    from .pipeline import MusicRef
+
+    def go(a, pl, p):
+        m = a.music
+        looks = {k: v for k, v in pl.looks.items() if k not in ("music_off", "grid")}
+        return replace(pl, music=MusicRef(m.path, float(m.start), float(m.tempo), float(m.beat_period)), looks=looks), []
+    return _plan_job(job, go)
+
+
 def run_import(job: Job) -> dict:
     """导入 files into the project: a new analysis (undo keeps the old one) plus the songs among them."""
     from .pipeline import import_media
@@ -671,7 +683,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "split": run_split, "insert": run_insert, "delete": run_delete, "import": run_import, "remove_clip": run_remove_clip, "trim": run_trim, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "grow_preset": run_grow_preset, "drawn_layer": run_drawn_layer, "retime": run_retime, "live": run_live}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "split": run_split, "insert": run_insert, "swap_music": run_swap_music, "delete": run_delete, "import": run_import, "remove_clip": run_remove_clip, "trim": run_trim, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "grow_preset": run_grow_preset, "drawn_layer": run_drawn_layer, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None
