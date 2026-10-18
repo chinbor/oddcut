@@ -27,6 +27,32 @@ assets/             示例素材和模型（不进仓库）
 output/             所有生成结果（不进仓库）；output/app/<时间>/ 是每次生成，output/app/cache/ 是缓存
 ```
 
+## 改什么看哪里（先 grep，别整文件读）
+
+| 要改的 | 文件（行数） |
+|---|---|
+| 时间线：轨道、拖动、裁剪、吸附、滚轮 | `desktop/src/Timeline.jsx`（725） |
+| 预览画面、画面上拖动、抠像点选 / 圈选 | `desktop/src/Viewer.jsx`（647） |
+| 全局状态、撤销、调后端、素材导入删除 | `desktop/src/App.jsx`（867） |
+| 工具栏 / 属性面板 / 画中画属性 / 素材库 | `Toolbar.jsx` `Properties.jsx` `OverlayProps.jsx` `Library.jsx` |
+| 后端接口、任务 | `code/oddcut/server.py`（901，开头注释列了全部接口） |
+| plan.json 的结构、编辑操作、保存 | `code/oddcut/pipeline.py`（1622，大文件，按函数名 grep） |
+| 渲染、画中画合成 | `render.py`（335）、`pip.py`（502，开头注释是 overlay 字段说明） |
+| 抠像 | `cutout.py`（288）、`sam.py`（83） |
+| 万物生长 / 手绘 / 贴纸（暂停中，别动） | `growth.py` `drawn_reveal.py`（1424） `stickers.py` `cartoons.py` |
+
+每个 .py 开头的 docstring 就是该模块的说明，读前 30 行通常就够。
+
+## 省上下文
+
+- **不要读** `docs/引擎技术说明.md`（32 KB 早期笔记）、`docs/screens_v05/` 图片、`output/`、`.venv/`、`desktop/node_modules/`，除非任务直接需要。
+- 不要把别的 agent 的完整对话或日志贴进来。接手只需要：本文件 + `docs/开发记录.md` 的「现在做到哪」+ `git log --oneline -15`。
+- 历史细节去 `git show <提交号>` 查，不要整理进文档。
+
+## 用户否决过的（不要再做）
+
+画笔修边、区域标签（前景 / 地面 / 中景 / 天空）、缓动曲线选项、运动模糊滑块、步骤说明和「为什么」的解释文字、框选抠像、轨道上的眼睛 / 锁按钮、音乐静音开关（要删就直接删音乐）。
+
 ## 怎么跑
 
 - 桌面端：双击 `desktop\启动Oddcut.bat`（构建界面后打开窗口）。开发：`cd desktop && npm run dev`。
@@ -53,7 +79,8 @@ output/             所有生成结果（不进仓库）；output/app/<时间>/ 
 ## 每次工作结束前（防止额度用完断档）
 
 1. 本地提交（`git commit -s`）。
-2. 在 [docs/开发记录.md](docs/开发记录.md) 的「提交记录」加一行：提交号 + 一句话做了什么；更新「现在做到哪」和「下一步」。
-3. 给用户看的截图或视频存到 `output\给你看的截图\`，告诉用户这个路径。
+2. 在 [docs/开发记录.md](docs/开发记录.md) 的「提交记录」加一行：提交号 + 一句话做了什么；更新「现在做到哪」和「下一步」。开发记录保持在 80 行以内：「现在做到哪」只写现状不写过程，提交记录超过 20 行就把旧的合并成一行概括。
+3. 用户新定的规则或否决的功能，当场写进本文件对应的小节。
+4. 给用户看的截图或视频存到 `output\给你看的截图\`，告诉用户这个路径。
 
 接手时：读本文件 → 读开发记录 → `git status` 和 `git log --oneline -15` → 从「现在做到哪」继续。
