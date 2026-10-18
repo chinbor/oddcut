@@ -580,3 +580,10 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .ph-read { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 48%; margin-right: 10px; }
 .ph-read .same { color: var(--ok); }
 .transport .src-tc { position: absolute; right: 20px; top: 4px; font-size: 11.5px; color: #ffd36b; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- the timeline's height */
+.timeline { position: relative; }
+.tl-splitter { position: absolute; left: 0; right: 0; top: -4px; height: 8px; cursor: ns-resize; z-index: 20; }
+.tl-splitter::after { content: ''; position: absolute; left: 50%; top: 2px; width: 44px; height: 4px; margin-left: -22px; border-radius: 2px; background: var(--line-2); opacity: .8; }
+.tl-splitter:hover::after, body.resizing-tl .tl-splitter::after { background: var(--accent); opacity: 1; }
+body.resizing-tl { cursor: ns-resize; user-select: none; }

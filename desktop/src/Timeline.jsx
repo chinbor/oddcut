@@ -4,7 +4,8 @@ import Icon from './icons.jsx'
 import { linkSrc } from './pip.js'
 
 // Bottom timeline: ruler + playhead, picture / sticker / drawn / music tracks, beat lines through all of them.
-// Wheel zooms around the pointer (Shift + wheel or a touchpad scrolls sideways). Click a clip to select it and
+// The wheel scrolls the tracks up and down, Ctrl + wheel zooms around the pointer, Shift + wheel (or a touchpad's
+// sideways swipe) scrolls sideways, as in 剪映专业版. The bar along the top edge makes the timeline taller or lower. Click a clip to select it and
 // play just that piece, drag it sideways to put it somewhere else (Esc cancels); click the ruler or empty space
 // to go back to the whole video; drag the line between clips to move a cut, which jumps onto the nearest beat while
 // 切点对齐节拍 is on (Alt = the other way round); drag a sticker bar's ends or its keyframe diamonds.
@@ -29,7 +30,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                                    draft, onInOut, onCutMove, busy, pending, live, looks, keySel, onKeySelect, onKeyTime,
                                    metronome, setMetronome, overlays = [], ovSel, onSelectOverlay, onOverlayDraft, onOverlayCommit,
                                    onDropClip, onDropGrid, clipThumbs = {}, clipInfo, onTrim, onShotToPip, onCopyItem, canPaste,
-                                   onPasteAt, onDeleteOverlay }) {
+                                   onPasteAt, onDeleteOverlay, onResize }) {
   const scroller = useRef(null)
   const canvas = useRef(null)
   const [width, setWidth] = useState(800)
@@ -81,10 +82,13 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
   useEffect(() => {
     const el = scroller.current
     const onWheel = (e) => {
-      if (e.shiftKey && !e.ctrlKey) { e.preventDefault(); el.scrollLeft += e.deltaY || e.deltaX; return }
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return            // touchpad sideways: native scroll
-      e.preventDefault()
-      zoomTo(zoomRef.current * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX)
+      if (e.ctrlKey || e.metaKey) {                                // Ctrl + wheel (and a touchpad pinch): zoom
+        e.preventDefault()
+        zoomTo(zoomRef.current * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX)
+        return
+      }
+      if (e.shiftKey) { e.preventDefault(); el.scrollLeft += e.deltaY || e.deltaX }
+      // plain wheel / touchpad swipes: the browser scrolls the tracks (up-down, or sideways)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
@@ -441,6 +445,17 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
 
   return (
     <section className="timeline">
+      <div className="tl-splitter" title="上下拖动，调整时间轴的高度（双击恢复）"
+           onDoubleClick={() => onResize?.(null)}
+           onPointerDown={(e) => {
+             if (e.button !== 0) return
+             e.preventDefault()
+             const h0 = e.currentTarget.parentElement.getBoundingClientRect().height, y0 = e.clientY
+             document.body.classList.add('resizing-tl')
+             const mv = (ev) => onResize?.(h0 - (ev.clientY - y0))
+             const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); document.body.classList.remove('resizing-tl') }
+             window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
+           }} />
       <div className="tl-toolbar">
         <button className={`toggle ${snap ? 'on' : ''}`} onClick={() => setSnap((v) => !v)} aria-pressed={snap}
                 title="拖动镜头切点时，自动吸到最近的节拍上；按住 Alt 临时自由拖">
@@ -472,7 +487,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
         {live && live.total > live.done && (
           <span className="live-note"><i className="spin" />正在把贴纸、手绘和转场加进预览（{live.done} / {live.total}）</span>
         )}
-        <div className="zoom-btns" title="滚轮缩放（Shift + 滚轮左右移动）">
+        <div className="zoom-btns" title="Ctrl + 滚轮缩放，Shift + 滚轮左右移动，滚轮上下翻轨道">
           <button className="icon" onClick={() => zoomTo(zoom / 1.5)} disabled={zoom <= 1} aria-label="缩小">−</button>
           <button className="icon" onClick={() => zoomTo(zoom * 1.5)} disabled={zoom >= 16} aria-label="放大">+</button>
           <button className="fit" onClick={() => zoomTo(1)} disabled={zoom <= 1}>适应</button>

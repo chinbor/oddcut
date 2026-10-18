@@ -418,6 +418,13 @@ export default function App() {
 
   // ---------------------------------------------------------------- the tool bar (分割 / 抠像 / 画中画 / 特效) and ◆
   const [libTab, setLibTab] = useState(null)              // ask the library to show a tab: {tab, n}
+  // the timeline's height, dragged with the bar along its top edge (remembered; double-click = default)
+  const [tlH, setTlH] = useState(() => { try { return Number(localStorage.getItem('oddcut.tlh')) || null } catch { return null } })
+  const resizeTl = (h) => {
+    const v = h == null ? null : Math.round(Math.min(window.innerHeight - 56 - 330, Math.max(180, h)))
+    setTlH(v)
+    try { if (v) localStorage.setItem('oddcut.tlh', String(v)); else localStorage.removeItem('oddcut.tlh') } catch {}
+  }
   const fpsT = plan?.fps || 30
   const shotSel = plan && selected != null ? plan.shots[selected] : null
   const newId = () => `ov${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`
@@ -710,7 +717,7 @@ export default function App() {
   const autoSticker = !!(shot && shot.sticker && !shot.sticker_at)
 
   return (
-    <div className={`editor ${shot || curOv ? 'with-props' : ''} ${rail ? 'narrow' : ''}`}>
+    <div className={`editor ${shot || curOv ? 'with-props' : ''} ${rail ? 'narrow' : ''}`} style={tlH ? { '--tl-h': `${tlH}px` } : undefined}>
       <header className="topbar">
         <button className="ghost" onClick={() => setView('new')} title="新建 / 改素材"><Icon name="back" size={18} />新建</button>
         <div className="title">
@@ -799,7 +806,7 @@ export default function App() {
                 onCutMove={moveCut} onTrim={trimShot} onShotToPip={shotToPip}
                 onCopyItem={copyItem} canPaste={!!clipboard}
                 onPasteAt={(t, track) => clipboard && pasteAt(clipboard.o, Math.max(0, Math.min(t, plan.duration - 0.3)), track)}
-                onDeleteOverlay={deleteOverlay} busy={busy} pending={live?.pending || []} live={live} looks={looks}
+                onDeleteOverlay={deleteOverlay} onResize={resizeTl} busy={busy} pending={live?.pending || []} live={live} looks={looks}
                 keySel={keySel} onKeySelect={setKeySel} onKeyTime={keyTime} metronome={metronome} setMetronome={setMetronome} />
       {toastsEl}
     </div>
