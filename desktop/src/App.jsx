@@ -421,7 +421,7 @@ export default function App() {
   // the timeline's height, dragged with the bar along its top edge (remembered; double-click = default)
   const [tlH, setTlH] = useState(() => { try { return Number(localStorage.getItem('oddcut.tlh')) || null } catch { return null } })
   const resizeTl = (h) => {
-    const v = h == null ? null : Math.round(Math.min(window.innerHeight - 56 - 330, Math.max(180, h)))
+    const v = h == null ? null : Math.round(Math.min(window.innerHeight - 56 - 330, Math.max(250, h)))
     setTlH(v)
     try { if (v) localStorage.setItem('oddcut.tlh', String(v)); else localStorage.removeItem('oddcut.tlh') } catch {}
   }

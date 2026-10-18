@@ -43,6 +43,12 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
   const [pipGhost, setPipGhost] = useState(null)   // a main-track clip dragged over a 画中画 track: {k, t, len}
   const [menu, setMenu] = useState(null)           // right-click menu: {x, y, item: {shot} | {ov}, t, k}
   const [guide, setGuide] = useState(null)         // a 画中画 being dragged snapped here: {t, text}
+  const [dragSlot, setDragSlot] = useState(false)  // something is being dragged: show a 「拖到这里新建轨道」 lane
+  useEffect(() => {
+    const off = () => setDragSlot(false)
+    window.addEventListener('dragend', off); window.addEventListener('drop', off)
+    return () => { window.removeEventListener('dragend', off); window.removeEventListener('drop', off) }
+  }, [])
   useEffect(() => {
     if (!menu) return
     const close = () => setMenu(null)
@@ -170,6 +176,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     const mv = (ev) => {
       const dx = ev.clientX - x0
       if ((!st && Math.abs(dx) < 5 && Math.abs(ev.clientY - y0) < 5) || busy) return
+      if (!st) setDragSlot(true)
       const lane = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.track.pip')
       if (lane) {
         const t = Math.max(0, Math.min(duration - 0.3, tAt(ev.clientX) - grab))
@@ -186,7 +193,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     const end = (keep) => {
       window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up)
       window.removeEventListener('keydown', esc, true)
-      setShotDrag(null); setPipGhost(null)
+      setShotDrag(null); setPipGhost(null); setDragSlot(false)
       if (!st) { onSelect(i); onPlayShot(i) }
       else if (keep && st.pip != null) onShotToPip(i, st.pip, st.t)
       else if (keep && st.dst != null && st.dst !== i) onMoveShot(i, st.dst)
@@ -350,6 +357,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     let patch = null, last = null, id = 0
     const css = bar.style.cssText
     bar.classList.add('dragging')
+    if (what === 'body') setDragSlot(true)
     const step = () => {
       id = 0
       const ev = last
@@ -359,9 +367,12 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
         const a = snapTo(t0, ev, o), b = snapTo(t0 + len, ev, o)
         sn = a && (!b || a.d + a.weak <= b.d + b.weak) ? a : b
         if (sn) t0 = Math.min(duration - len, Math.max(0, sn === a ? sn.t : sn.t - len))
-        const track = Math.min(OV_LANES - 1, Math.max(0, o.track - Math.round((ev.clientY - y0) / LANE_H)))
-        patch = { t_start: t0, t_end: t0 + len, track }
-        bar.style.transform = `translate(${(t0 - o.t_start) * scale}px, ${(o.track - track) * LANE_H}px)`
+        const lane = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.track.pip')
+        const home = bar.parentElement.getBoundingClientRect().top
+        const track = lane ? Number(lane.dataset.k) : (patch?.track ?? o.track)
+        const dy = lane ? lane.getBoundingClientRect().top - home : (patch?.dy ?? 0)
+        patch = { t_start: t0, t_end: t0 + len, track, dy }
+        bar.style.transform = `translate(${(t0 - o.t_start) * scale}px, ${dy}px)`
       } else if (what === 'in') {
         const lo = Math.max(0, o.t_start - o.src_start), hi = o.t_end - 0.3
         let t0 = Math.min(hi, Math.max(lo, tAt(ev.clientX)))
@@ -391,7 +402,8 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
       if (id) { cancelAnimationFrame(id); step() }
       bar.classList.remove('dragging')
       delete bar.dataset.tip
-      setGuide(null)
+      setGuide(null); setDragSlot(false)
+      if (patch) delete patch.dy
       bar.style.cssText = css                    // React takes over again from here
       if (patch) { flushSync(() => onOverlayDraft(o.id, patch)); onOverlayCommit(o.id) }
     }
@@ -423,7 +435,12 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
   }
   const beatLen = plan.beat || 60 / (wave?.tempo || 120)
-  const lanes = Math.min(6, Math.max(-1, ...overlays.map((o) => o.track)) + 2)
+  const used = [...new Set(overlays.map((o) => o.track))].sort((a, b) => b - a)
+  const free = [0, 1, 2, 3, 4, 5].filter((k) => !used.includes(k))
+  const slotK = used.length ? (free.find((k) => k > used[0]) ?? free[free.length - 1]) : 0
+  const laneKs = dragSlot && slotK != null ? [...used, slotK].sort((a, b) => b - a) : used
+  const hasSticker = plan.shots.some((s) => s.sticker) || !!draft
+  const hasDrawn = plan.shots.some((s) => s.drawn)
   const laneDrop = (k) => ({
     onDragOver: (e) => { if (['application/x-oddcut-clip', 'application/x-oddcut-grid'].some((ty) => e.dataTransfer.types.includes(ty))) { e.preventDefault(); e.currentTarget.classList.add('drop') } },
     onDragLeave: (e) => e.currentTarget.classList.remove('drop'),
@@ -494,6 +511,8 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
         </div>
       </div>
       <div className="tl-scroll" ref={scroller}
+           onDragEnter={(e) => { if (['application/x-oddcut-clip', 'application/x-oddcut-grid'].some((ty) => e.dataTransfer.types.includes(ty))) setDragSlot(true) }}
+           onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragSlot(false) }}
            onPointerDown={(e) => { if (e.target.classList.contains('track') || e.target.classList.contains('tl-inner')) { onSelect(null); onSelectOverlay(null) } }}>
         <div className="tl-inner" style={{ width: LABEL_W + duration * scale + (zoom > 1 ? 20 : 8) }}>
           <div className="tl-ruler" onPointerDown={(e) => scrub(e, true)} title="点这里回到整段播放">
@@ -514,12 +533,13 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
             })}
           </div>
 
-          {Array.from({ length: lanes }, (_, n) => lanes - 1 - n).map((k) => {
+          <div className="tl-room" />
+          {laneKs.map((k) => {
             const mine = overlays.filter((o) => o.track === k)
             return (
-              <div key={`pip${k}`} className="track pip" data-k={k} {...laneDrop(k)} onContextMenu={(e) => openMenu(e, null, k)}>
-                <label><Icon name="film" size={14} />画中画 {k + 1}</label>
-                {!mine.length && !pipGhost && <span className="lane-hint" style={{ left: LABEL_W + 10 }}>把下面「画面」里的一段拖上来，或者复制后粘贴，就成了画中画</span>}
+              <div key={`pip${k}`} className={`track pip ${mine.length ? '' : 'slot'}`} data-k={k} {...laneDrop(k)} onContextMenu={(e) => openMenu(e, null, k)}>
+                <label><Icon name="film" size={14} />{mine.length ? `画中画 ${used.length - used.indexOf(k)}` : '新轨道'}</label>
+                {!mine.length && pipGhost?.k !== k && <span className="lane-hint" style={{ left: LABEL_W + 10 }}>拖到这里新建轨道</span>}
                 {pipGhost?.k === k && <div className="bar ov ghost" style={{ left: x(pipGhost.t) + 1, width: Math.max(8, Math.min(pipGhost.len, duration - pipGhost.t) * scale - 2) }}><span>放到这里</span></div>}
                 {mine.map((o) => (
                   <div key={o.id} className={`bar ov ${ovSel === o.id ? 'sel' : ''} ${o.group ? 'grp' : ''}`}
@@ -549,8 +569,54 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
             )
           })}
 
+          {hasSticker && (
+          <div className="track bars sticker">
+            <label><Icon name="sticker" size={16} />贴纸</label>
+            {plan.shots.map((s, i) => {
+              const d = draft && selected === i ? draft : null
+              const at = d || s.sticker_at
+              if (!s.sticker && !d) return null
+              const len = s.t_end - s.t_start
+              const tIn = at?.in || 0
+              const tOut = at?.out ?? len
+              const id = (d?.id) || s.sticker.split('@')[0]
+              const img = looks.stickers.find((x2) => x2.id === id)?.preview
+              const keys = at?.keys || []
+              return (
+                <div key={i} className={`bar ${s.sticker_at || d ? 'manual' : 'auto'} ${selected === i ? 'sel' : ''}`}
+                     style={{ left: x(s.t_start + tIn) + 1, width: Math.max(6, (tOut - tIn) * scale - 2), ...shift(i) }}
+                     onPointerDown={(e) => pick(i, e)} title={stickerName(s.sticker || id)}>
+                  {d && <i className="edge l" onPointerDown={(e) => edge(e, i, 'in')} title="拖动改出现时间" />}
+                  {img && <img src={img} alt="" />}
+                  <span>{stickerName(s.sticker || id)}{s.sticker_at ? ' ✎' : ''}</span>
+                  {(at?.mode === 'still' ? keys.slice(0, 1) : keys).map((k, j) => (
+                    <i key={j} className={`diamond ${selected === i && keySel === j ? 'sel' : ''}`} style={{ left: (k.t - tIn) * scale - 5 }}
+                       title={`第 ${j + 1} 个关键帧 · ${k.t.toFixed(2)} 秒（拖动改时间）`} onPointerDown={(e) => diamond(e, i, j, k, keys)} />
+                  ))}
+                  {d && <i className="edge r" onPointerDown={(e) => edge(e, i, 'out')} title="拖动改消失时间" />}
+                </div>
+              )
+            })}
+          </div>
+          )}
+
+          {hasDrawn && (
+          <div className="track bars drawn">
+            <label><Icon name="brush" size={16} />手绘</label>
+            {plan.shots.map((s, i) => s.drawn && (
+              <div key={i} className={`bar ${s.drawn.manual ? 'manual' : 'auto'} ${selected === i ? 'sel' : ''}`}
+                   style={{ left: x(s.t_start) + 1, width: Math.max(6, (s.t_end - s.t_start) * scale - 2), ...shift(i) }}
+                   onPointerDown={(e) => pick(i, e)} title={`手绘 · ${styleName(s.drawn.style)}`}>
+                <span>{styleName(s.drawn.style)}{s.drawn.manual ? ' ✎' : ''}</span>
+                <i className="reveal" style={{ left: s.drawn.reveal_at * scale }} title="在这里变回实拍（踩在重拍上）" />
+              </div>
+            ))}
+          </div>
+          )}
+
+          <div className="tl-fixed">
           <div className="track video">
-            <label><Icon name="film" size={16} />画面</label>
+            <label title="主轨：成片的画面，一段接一段"><Icon name="film" size={16} />主轨</label>
             {plan.shots.map((s, i) => {
               const tw = trimDrag?.i === i ? trimDrag.d * scale : 0
               const w = Math.max(3, (s.t_end - s.t_start) * scale - 2 + tw)
@@ -591,50 +657,10 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
             })}
           </div>
 
-          <div className="track bars sticker">
-            <label><Icon name="sticker" size={16} />贴纸</label>
-            {plan.shots.map((s, i) => {
-              const d = draft && selected === i ? draft : null
-              const at = d || s.sticker_at
-              if (!s.sticker && !d) return null
-              const len = s.t_end - s.t_start
-              const tIn = at?.in || 0
-              const tOut = at?.out ?? len
-              const id = (d?.id) || s.sticker.split('@')[0]
-              const img = looks.stickers.find((x2) => x2.id === id)?.preview
-              const keys = at?.keys || []
-              return (
-                <div key={i} className={`bar ${s.sticker_at || d ? 'manual' : 'auto'} ${selected === i ? 'sel' : ''}`}
-                     style={{ left: x(s.t_start + tIn) + 1, width: Math.max(6, (tOut - tIn) * scale - 2), ...shift(i) }}
-                     onPointerDown={(e) => pick(i, e)} title={stickerName(s.sticker || id)}>
-                  {d && <i className="edge l" onPointerDown={(e) => edge(e, i, 'in')} title="拖动改出现时间" />}
-                  {img && <img src={img} alt="" />}
-                  <span>{stickerName(s.sticker || id)}{s.sticker_at ? ' ✎' : ''}</span>
-                  {(at?.mode === 'still' ? keys.slice(0, 1) : keys).map((k, j) => (
-                    <i key={j} className={`diamond ${selected === i && keySel === j ? 'sel' : ''}`} style={{ left: (k.t - tIn) * scale - 5 }}
-                       title={`第 ${j + 1} 个关键帧 · ${k.t.toFixed(2)} 秒（拖动改时间）`} onPointerDown={(e) => diamond(e, i, j, k, keys)} />
-                  ))}
-                  {d && <i className="edge r" onPointerDown={(e) => edge(e, i, 'out')} title="拖动改消失时间" />}
-                </div>
-              )
-            })}
-          </div>
-
-          <div className="track bars drawn">
-            <label><Icon name="brush" size={16} />手绘</label>
-            {plan.shots.map((s, i) => s.drawn && (
-              <div key={i} className={`bar ${s.drawn.manual ? 'manual' : 'auto'} ${selected === i ? 'sel' : ''}`}
-                   style={{ left: x(s.t_start) + 1, width: Math.max(6, (s.t_end - s.t_start) * scale - 2), ...shift(i) }}
-                   onPointerDown={(e) => pick(i, e)} title={`手绘 · ${styleName(s.drawn.style)}`}>
-                <span>{styleName(s.drawn.style)}{s.drawn.manual ? ' ✎' : ''}</span>
-                <i className="reveal" style={{ left: s.drawn.reveal_at * scale }} title="在这里变回实拍（踩在重拍上）" />
-              </div>
-            ))}
-          </div>
-
           <div className="track music">
             <label><Icon name="music" size={16} />音乐</label>
             <canvas ref={canvas} style={{ position: 'absolute', left: LABEL_W, top: 4 }} />
+          </div>
           </div>
 
           {cutDrag && (

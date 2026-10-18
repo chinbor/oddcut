@@ -587,3 +587,17 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .tl-splitter::after { content: ''; position: absolute; left: 50%; top: 2px; width: 44px; height: 4px; margin-left: -22px; border-radius: 2px; background: var(--line-2); opacity: .8; }
 .tl-splitter:hover::after, body.resizing-tl .tl-splitter::after { background: var(--accent); opacity: 1; }
 body.resizing-tl { cursor: ns-resize; user-select: none; }
+
+/* ---------------------------------------------------------------- 剪映-style tracks: overlays above the 主轨, music below */
+.tl-inner { display: flex; flex-direction: column; }
+.tl-room { flex: 1 1 auto; min-height: 0; }
+.tl-fixed { position: sticky; bottom: 0; z-index: 1; background: var(--panel); border-top: 1px solid var(--line); }
+.track.video { height: 86px; }
+.track.video .clip, .track.video .cut { top: 7px; height: 72px; }
+.track.video > label { color: var(--text); font-weight: 600; }
+.track.pip.slot { background: rgba(255,255,255,.025); }
+.track.pip.slot .lane-hint { color: var(--accent); }
+.bar.ov.dragging { pointer-events: none; }
+.tl-scroll { display: flex; flex-direction: column; }
+.tl-scroll > .tl-inner { flex: 1 1 auto; min-height: auto; align-self: flex-start; }
+.track.music { overflow: hidden; }
