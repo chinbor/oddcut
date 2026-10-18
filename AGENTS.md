@@ -61,7 +61,7 @@ output/             所有生成结果（不进仓库）；output/app/<时间>/ 
 
 ## 质量门槛（每次提交前）
 
-- `.venv\Scripts\python code\tools\check.py`：语法、CRLF、模块能否导入，几秒钟。
+- `.venv\Scripts\python code\tools\check.py`：语法、换行（同一文件不能混用 LF / CRLF）、模块能否导入，几秒钟。
 - 改了渲染、plan 或界面，加 `--full`：再跑老方案渲染比对（基准在 `code/tools/check_baseline.json`）和界面构建，约一分钟。
 - pre-commit 钩子会自动跑快速检查。新克隆后启用一次：`git config core.hooksPath .githooks`。
 - 检查没过不要提交，也不要用 `--no-verify` 绕过。老渲染变了只有用户同意才能 `--update-baseline`。
@@ -78,7 +78,7 @@ output/             所有生成结果（不进仓库）；output/app/<时间>/ 
 2. **效果必须可编辑。** 任何自动效果（万物生长、手绘、贴纸、转场）都要由用户能看到、能改、能亲手复现的编辑器元素组成：画中画图层 + 抠像 + 关键帧。不允许黑盒渲染。只放在合适的镜头上。
 3. **现阶段先做手动编辑体验**，自动生成暂停。
 4. **老渲染结果不能变：** 改渲染代码后跑 `check.py --full`，老方案渲染的帧哈希必须等于 `code/tools/check_baseline.json` 里的值（`e92bf85b…`，只算每帧哈希，和早期整份 framemd5 `86b67200…` 不是一个数）。
-5. **提交：** `git commit -s`（DCO 必需）；`code/oddcut` 里的 .py 是 CRLF，保持不变；**不要 push，除非用户明确说推**。
+5. **提交：** `git commit -s`（DCO 必需）；每个文件保持原有换行（`code/oddcut` 里多数 .py 是 LF，少数是 CRLF；check.py 拒绝同一文件里混用）；**不要 push，除非用户明确说推**。
 6. **依赖、模型、素材必须和 AGPL 兼容**，不能用「仅限非商用」的东西。
 7. 和用户交流用中文，先说结论，简短。
 

@@ -15,8 +15,6 @@ import useHistory from './useHistory.js'
 import useMediaEdits from './useMediaEdits.js'
 import useMetronome from './useMetronome.js'
 
-const GROW_DEFAULT = { layers: 3, stagger: 'beat', blur: 1 }           // 万物生长: 3 layers, one per beat, full motion blur
-
 export default function App() {
   const [view, setView] = useState('new')
   const [form, setForm] = useState({ clips: '', music: '', template: '', aspect: '9:16', duration: 18, autoStickers: true, drawn: true, autoGrow: true })
