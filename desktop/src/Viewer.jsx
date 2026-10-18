@@ -331,6 +331,35 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     }, 120)
     return () => { alive = false; clearTimeout(id) }
   }, [cutKey])
+  // 描边 at once (the rendered preview catches up later): the outline drawn from the cut at the playhead
+  const [ringImg, setRingImg] = useState(null)
+  const strokeOpt = selOv?.mask?.shape === 'cutout' ? selOv.mask.stroke : null
+  useEffect(() => {
+    if (!cutImg || !strokeOpt) { setRingImg(null); return }
+    let alive = true
+    const im = new Image()
+    im.onload = () => {
+      const w = im.width, h = im.height
+      const r = Math.max(1, strokeOpt.width * Math.min(w, h))
+      const m = document.createElement('canvas'); m.width = w; m.height = h
+      const mc = m.getContext('2d')
+      mc.drawImage(im, 0, 0)
+      const d = mc.getImageData(0, 0, w, h)
+      const col = [1, 3, 5].map((i) => parseInt(strokeOpt.color.slice(i, i + 2), 16))
+      for (let i = 0; i < d.data.length; i += 4) { const v = d.data[i]; d.data[i] = col[0]; d.data[i + 1] = col[1]; d.data[i + 2] = col[2]; d.data[i + 3] = v }
+      mc.putImageData(d, 0, 0)
+      const c = document.createElement('canvas'); c.width = w; c.height = h
+      const ctx = c.getContext('2d')
+      for (const rr of [r, r * 0.66, r * 0.33]) {
+        for (let k = 0; k < 24; k++) ctx.drawImage(m, rr * Math.cos((k * Math.PI) / 12), rr * Math.sin((k * Math.PI) / 12))
+      }
+      ctx.globalCompositeOperation = 'destination-out'
+      ctx.drawImage(m, 0, 0)
+      if (alive) setRingImg(c.toDataURL())
+    }
+    im.src = cutImg
+    return () => { alive = false }
+  }, [cutImg, strokeOpt?.color, strokeOpt?.width])
   const liveOv = overlays.filter((o) => time >= o.t_start && time < o.t_end).sort((a, b) => a.track - b.track)
 
   // 边播边拖: hold the sticker, playback runs at half speed, the drag is recorded and thinned into keyframes
@@ -468,6 +497,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
                   {sel && cutImg && o.mask?.shape === 'cutout' && (!o.fx || cutTool) && (
                     <i className="cut-preview" style={{ WebkitMaskImage: `url(${cutImg})`, maskImage: `url(${cutImg})` }} />
                   )}
+                  {sel && ringImg && o.mask?.stroke && <img className="cut-ring" src={ringImg} alt="" draggable={false} />}
                   {sel && stroke && (
                     <svg className={`cut-stroke ${stroke.op}`} viewBox="0 0 100 100" preserveAspectRatio="none">
                       <polyline points={stroke.pts.map(([x, y]) => `${x * 100},${y * 100}`).join(' ')} />

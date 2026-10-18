@@ -554,3 +554,4 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .keybtn:disabled i { border-color: var(--muted); }
 .toolbar .segmented.mini { display: inline-flex; flex-wrap: nowrap; flex: none; }
 .toolbar .segmented.mini button { white-space: nowrap; }
+.ov-box .cut-ring { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
