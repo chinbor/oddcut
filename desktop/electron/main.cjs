@@ -140,6 +140,13 @@ function registerIpc() {
     })
     return r.canceled ? null : r.filePaths[0]
   })
+  ipcMain.handle('dialog:media', async () => {
+    const r = await dialog.showOpenDialog(mainWindow, {
+      title: '导入素材', properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '视频、图片、音乐', extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'jpg', 'jpeg', 'png', 'webp', 'bmp', 'mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'] }],
+    })
+    return r.canceled ? [] : r.filePaths
+  })
   ipcMain.handle('video:export', async (_e, src) => {
     const r = await dialog.showSaveDialog(mainWindow, {
       title: '导出成片', defaultPath: `Oddcut_${new Date().toISOString().slice(0, 10)}.mp4`,

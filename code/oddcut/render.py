@@ -249,7 +249,7 @@ def render_effect(s: Shot, i: int, tpl: dict, work_dir: Path, effects_cache: Pat
 def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
            out_path: Path, work_dir: Path, report: Reporter | None = None,
            preview: bool = False, effects_cache: Path | None = None, effects: str | None = None,
-           overlays: list[dict] | None = None, grow: str | None = None) -> float:
+           overlays: list[dict] | None = None, grow: str | None = None, silent: bool = False) -> float:
     """`music` needs .path and .start (a Music, or the MusicRef a saved plan loads into).
     `preview`: small and fast. `effects_cache`: rendered sticker / drawn shots (and, in previews, finished
     shots) are kept there and reused by later renders.
@@ -320,6 +320,12 @@ def render(shots: list[Shot], music, tpl: dict, template_dir: Path,
     total = sum(s.frames for s in shots) / fps
     afade = min(0.8, total / 4)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if silent:                         # the music was deleted: a silent track, so players still see audio
+        run(["ffmpeg", "-y", "-v", "error", "-i", str(video_only), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+             "-map", "0:v", "-map", "1:a", "-t", f"{total:.3f}", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+             "-movflags", "+faststart", str(out_path)])
+        report("render", "mux", 1, 1)
+        return total
     run(["ffmpeg", "-y", "-v", "error", "-i", str(video_only),
          "-ss", f"{music.start:.3f}", "-i", music.path,
          "-map", "0:v", "-map", "1:a", "-t", f"{total:.3f}",

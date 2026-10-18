@@ -30,7 +30,8 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                                    draft, onInOut, onCutMove, busy, pending, live, looks, keySel, onKeySelect, onKeyTime,
                                    metronome, setMetronome, overlays = [], ovSel, onSelectOverlay, onOverlayDraft, onOverlayCommit,
                                    onDropClip, onDropGrid, clipThumbs = {}, clipInfo, onTrim, onShotToPip, onCopyItem, canPaste,
-                                   onPasteAt, onDeleteOverlay, onResize }) {
+                                   onPasteAt, onDeleteOverlay, onResize, onInsertClip, onDeleteShot, musicSel, onSelectMusic,
+                                   onDeleteMusic, onDropMusic }) {
   const scroller = useRef(null)
   const canvas = useRef(null)
   const [width, setWidth] = useState(800)
@@ -44,6 +45,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
   const [menu, setMenu] = useState(null)           // right-click menu: {x, y, item: {shot} | {ov}, t, k}
   const [guide, setGuide] = useState(null)         // a 画中画 being dragged snapped here: {t, text}
   const [dragSlot, setDragSlot] = useState(false)  // something is being dragged: show a 「拖到这里新建轨道」 lane
+  const [insertAt, setInsertAt] = useState(null)   // a 素材 dragged over the 主轨: where it will go in
   useEffect(() => {
     const off = () => setDragSlot(false)
     window.addEventListener('dragend', off); window.addEventListener('drop', off)
@@ -615,7 +617,21 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
           )}
 
           <div className="tl-fixed">
-          <div className="track video">
+          <div className="track video"
+               onDragOver={(e) => {
+                 if (!e.dataTransfer.types.includes('application/x-oddcut-clip')) return
+                 e.preventDefault()
+                 const t = tAt(e.clientX)
+                 const k = plan.shots.findIndex((s) => t < (s.t_start + s.t_end) / 2)
+                 setInsertAt(k < 0 ? duration : plan.shots[k].t_start)
+               }}
+               onDragLeave={() => setInsertAt(null)}
+               onDrop={(e) => {
+                 const path = e.dataTransfer.getData('application/x-oddcut-clip')
+                 setInsertAt(null)
+                 if (path) { e.preventDefault(); e.stopPropagation(); onInsertClip(path, tAt(e.clientX)) }
+               }}>
+            {insertAt != null && <i className="insert-mark" style={{ left: x(insertAt) - 1 }} />}
             <label title="主轨：成片的画面，一段接一段"><Icon name="film" size={16} />主轨</label>
             {plan.shots.map((s, i) => {
               const tw = trimDrag?.i === i ? trimDrag.d * scale : 0
@@ -657,9 +673,16 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
             })}
           </div>
 
-          <div className="track music">
+          <div className={`track music ${musicSel ? 'sel' : ''} ${plan.music_off ? 'off' : ''}`}
+               onPointerDown={(e) => { if (e.button === 0 && !plan.music_off) { e.stopPropagation(); onSelectMusic() } }}
+               onContextMenu={(e) => { e.preventDefault(); if (plan.music_off) return; onSelectMusic(); setMenu({ x: e.clientX, y: e.clientY, item: { music: true }, t: 0, k: null }) }}
+               onDragOver={(e) => { if (e.dataTransfer.types.includes('application/x-oddcut-music')) { e.preventDefault(); e.currentTarget.classList.add('drop') } }}
+               onDragLeave={(e) => e.currentTarget.classList.remove('drop')}
+               onDrop={(e) => { e.currentTarget.classList.remove('drop'); const s = e.dataTransfer.getData('application/x-oddcut-music'); if (s) { e.preventDefault(); onDropMusic(s) } }}>
             <label><Icon name="music" size={16} />音乐</label>
-            <canvas ref={canvas} style={{ position: 'absolute', left: LABEL_W, top: 4 }} />
+            {plan.music_off
+              ? <span className="lane-hint" style={{ left: LABEL_W + 10 }}>音乐已删除：把左边「音乐」里的歌拖到这里</span>
+              : <canvas ref={canvas} style={{ position: 'absolute', left: LABEL_W, top: 4 }} />}
           </div>
           </div>
 
@@ -685,9 +708,16 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
       </div>
       {menu && (
         <div className="ctx-menu" style={{ left: menu.x, top: menu.y }} onPointerDown={(e) => e.stopPropagation()}>
-          {menu.item && <button onClick={() => { onCopyItem(menu.item); setMenu(null) }}>复制<kbd>Ctrl+C</kbd></button>}
-          <button disabled={!canPaste} onClick={() => { onPasteAt(menu.t, menu.k); setMenu(null) }}>粘贴到这里<kbd>Ctrl+V</kbd></button>
-          {menu.item?.ov != null && <button onClick={() => { onDeleteOverlay(menu.item.ov); setMenu(null) }}>删除<kbd>Delete</kbd></button>}
+          {menu.item?.music ? (
+            <button onClick={() => { onDeleteMusic(); setMenu(null) }}>删除<kbd>Delete</kbd></button>
+          ) : (
+            <>
+              {menu.item && <button onClick={() => { onCopyItem(menu.item); setMenu(null) }}>复制<kbd>Ctrl+C</kbd></button>}
+              <button disabled={!canPaste} onClick={() => { onPasteAt(menu.t, menu.k); setMenu(null) }}>粘贴到这里<kbd>Ctrl+V</kbd></button>
+              {menu.item?.ov != null && <button onClick={() => { onDeleteOverlay(menu.item.ov); setMenu(null) }}>删除<kbd>Delete</kbd></button>}
+              {menu.item?.shot != null && <button onClick={() => { onDeleteShot(menu.item.shot); setMenu(null) }}>删除<kbd>Delete</kbd></button>}
+            </>
+          )}
         </div>
       )}
     </section>

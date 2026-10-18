@@ -60,6 +60,7 @@ import threading
 import time
 import traceback
 import uuid
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -174,7 +175,7 @@ def _plan_result(pl, out: Path, notes=None) -> dict:
             "aspect": pl.template["output"]["aspect"], "fps": float(pl.template["output"]["fps"]),
             "manual": has_manual(pl), "notes": notes or [], "overlays": pl.looks.get("overlays") or [],
             "beat": round(float(pl.music.beat_period), 4),
-            "grow_presets": pl.looks.get("grow_presets") or [],
+            "grow_presets": pl.looks.get("grow_presets") or [], "music_off": bool(pl.looks.get("music_off")),
             "shots": [{**s.to_dict(), "clip_path": s.clip.path, "src_start": s.src_start,
                        "t_start": s.t_start, "t_end": s.t_end} for s in pl.shots]}
 
@@ -430,6 +431,58 @@ def run_trim(job: Job) -> dict:
     return _plan_result(pl, out, notes)
 
 
+def _plan_job(job: Job, fn) -> dict:
+    p = job.params
+    plan_path = _path(p["plan"])
+    pl, notes = fn(load_analysis(_path(p["analysis"])), load_plan(plan_path), p)
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return _plan_result(pl, out, notes)
+
+
+def run_insert(job: Job) -> dict:
+    """A 素材 dropped on the 主轨 at time t."""
+    from .pipeline import insert_shot
+    return _plan_job(job, lambda a, pl, p: insert_shot(a, pl, float(p["t"]), str(_path(p["clip"]))))
+
+
+def run_delete(job: Job) -> dict:
+    """删除 a 主轨 piece (index), or the music (music: true)."""
+    from .pipeline import delete_shot
+
+    def go(a, pl, p):
+        if p.get("music"):
+            return replace(pl, looks={**pl.looks, "music_off": True}), []
+        return delete_shot(a, pl, int(p["index"]))
+    return _plan_job(job, go)
+
+
+def run_import(job: Job) -> dict:
+    """导入 files into the project: a new analysis (undo keeps the old one) plus the songs among them."""
+    from .pipeline import import_media
+    p = job.params
+    src = _path(p["analysis"])
+    job.on_progress(ProgressEvent("import", "clips", 0, 1))
+    a, notes, songs = import_media(load_analysis(src), [str(_path(x)) for x in p["files"]], src.parent, CACHE_DIR / "clips")
+    out = _unique(src.parent / "analysis.json")
+    save_analysis(a, out)
+    job.on_progress(ProgressEvent("import", "clips", 1, 1))
+    return {**_analysis_result(a, out), "notes": notes, "songs": songs}
+
+
+def run_remove_clip(job: Job) -> dict:
+    """A 素材 out of the project (and, if asked, off the timeline); the file on disk stays."""
+    from .pipeline import remove_clip
+    p = job.params
+    src, plan_path = _path(p["analysis"]), _path(p["plan"])
+    a, pl, notes = remove_clip(load_analysis(src), load_plan(plan_path), str(_path(p["clip"])), bool(p.get("timeline")))
+    a_out = _unique(src.parent / "analysis.json")
+    save_analysis(a, a_out)
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return {"analysis": _analysis_result(a, a_out), "plan": _plan_result(pl, out, notes)}
+
+
 def run_split(job: Job) -> dict:
     """分割 shot `index` at time `t`."""
     from .pipeline import split_shot
@@ -445,6 +498,8 @@ def run_retime(job: Job) -> dict:
     p = job.params
     analysis_path = _path(p["analysis"])
     pl, notes = retime(load_analysis(analysis_path), load_plan(_path(p["plan"])))
+    if pl.looks.get("music_off"):                 # a new song after the old one was deleted: it plays again
+        pl = replace(pl, looks={k: v for k, v in pl.looks.items() if k != "music_off"})
     out = _unique(analysis_path.parent / f"plan_{pl.seed}.json")
     save_plan(pl, out)
     return _plan_result(pl, out, notes)
@@ -616,7 +671,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "split": run_split, "trim": run_trim, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "grow_preset": run_grow_preset, "drawn_layer": run_drawn_layer, "retime": run_retime, "live": run_live}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "split": run_split, "insert": run_insert, "delete": run_delete, "import": run_import, "remove_clip": run_remove_clip, "trim": run_trim, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "grow_preset": run_grow_preset, "drawn_layer": run_drawn_layer, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None

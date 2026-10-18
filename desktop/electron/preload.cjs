@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('oddcut', {
   api: (method, route, body) => ipcRenderer.invoke('api', method, route, body),
   pickFolder: (title) => ipcRenderer.invoke('dialog:folder', title),
   pickMusic: () => ipcRenderer.invoke('dialog:music'),
+  pickMedia: () => ipcRenderer.invoke('dialog:media'),
   exportVideo: (src) => ipcRenderer.invoke('video:export', src),
   showInFolder: (file) => ipcRenderer.invoke('shell:show', file),
   examples: () => ipcRenderer.invoke('app:examples'),

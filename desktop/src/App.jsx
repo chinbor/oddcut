@@ -451,6 +451,44 @@ export default function App() {
     if (shotSel) putOverlay(shotAsOverlay(selected), '已把这个片段复制成画中画')
   }
   const fromLibrary = () => setLibTab({ tab: 'clips', n: Date.now() })
+  // ---------------------------------------------------------------- 素材 after the edit was made (as in 剪映)
+  const [musicSel, setMusicSel] = useState(false)       // the music clip is selected (Delete removes it)
+  useEffect(() => { if (selected != null || ovSel) setMusicSel(false) }, [selected, ovSel])
+  const importMedia = guard(async (files) => {
+    if (!files) files = await vc.pickMedia()
+    if (!files?.length) return
+    const before = snapshot()
+    const a = await runJob({ kind: 'import', analysis: analysis.analysis, files })
+    setPast((h) => [...h.slice(-49), before]); setFuture([])
+    setAnalysis(a)
+    if (a.songs?.length) setSongs((s) => [...new Set([...s, ...a.songs])])
+    const added = a.clips.length - analysis.clips.length
+    toast([added ? `导入了 ${added} 个素材：拖到主轨插入，拖到主轨上方成为画中画` : '', a.songs?.length ? `${a.songs.length} 首音乐在「音乐」里` : '', ...(a.notes || [])].filter(Boolean).join('；'))
+    if (added) setLibTab({ tab: 'clips', n: Date.now() })
+  })
+  const insertClip = guard(async (path, t) => {
+    commit(await runJob({ kind: 'insert', analysis: analysis.analysis, plan: plan.plan, t, clip: path }))
+  })
+  const deleteShot = guard(async (i) => {
+    if (plan.shots.length < 2) { toast('主轨至少要留一段'); return }
+    setSelected(null)
+    commit(await runJob({ kind: 'delete', analysis: analysis.analysis, plan: plan.plan, index: i }))
+  })
+  const deleteMusic = guard(async () => {
+    setMusicSel(false)
+    commit(await runJob({ kind: 'delete', analysis: analysis.analysis, plan: plan.plan, music: true }))
+    toast('音乐已删除。想换一首：把「音乐」里的歌拖到音乐轨道上')
+  })
+  const removeClip = guard(async (path) => {
+    const used = plan.shots.some((s) => s.clip_path === path) || overlays.some((o) => o.clip === path)
+    if (used && !window.confirm('素材已被使用，同时删除时间线上的片段？')) return
+    const before = snapshot()
+    const r = await runJob({ kind: 'remove_clip', analysis: analysis.analysis, plan: plan.plan, clip: path, timeline: used })
+    setPast((h) => [...h.slice(-49), before]); setFuture([])
+    setAnalysis(r.analysis)
+    setSelected(null); setOvSel(null)
+    loadPlan(r.plan)
+  })
   // 复制 / 粘贴, as in 剪映: copy a piece of the main track (or a 画中画), paste it onto a 画中画 track at the playhead
   const [clipboard, setClipboard] = useState(null)
   const copyItem = ({ ov, shot: si }) => {
@@ -663,6 +701,8 @@ export default function App() {
       if (e.key === 'Escape') { if (drawPick) setDrawPick(null); else if (recordArmed) setRecordArmed(false); else if (boxMode) setBoxMode(false); else if (menu) setMenu(false); else { setSelected(null); setOvSel(null) } }
       if ((e.key === 'Delete' || e.key === 'Backspace') && ovSel && keySel == null && !busy) { e.preventDefault(); deleteOverlay(ovSel) }
       if ((e.key === 'Delete' || e.key === 'Backspace') && keySel != null && myDraft && !busy) { e.preventDefault(); deleteKey(keySel) }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && shot && !ovSel && keySel == null && !busy) { e.preventDefault(); deleteShot(selected) }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && musicSel && !busy) { e.preventDefault(); deleteMusic() }
       if (!(e.ctrlKey || e.metaKey)) return
       const k = e.key.toLowerCase()
       if (k === 'b' && (shot || curOv) && !busy) { e.preventDefault(); splitClip() }
@@ -748,7 +788,7 @@ export default function App() {
                onAddSticker={addSticker} onApplyStyle={applyStyle} music={{ path: analysis?.music?.path, name: analysis?.music?.name, tempo: analysis?.music?.tempo }}
                songs={songs} onPickSong={(s) => changeMusic(s)} onBrowseMusic={() => changeMusic()} busy={busy} rail={rail}
                clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} onAddOverlay={(p) => addOverlay(p)}
-               onAddGrid={(layout) => addGrid(layout)}
+               onAddGrid={(layout) => addGrid(layout)} onImport={() => importMedia()} onRemoveClip={removeClip}
                growTarget={presetAt(target()) ? target() + 1 : null}
                onGrow={() => { const i = target(); const g = presetAt(i); if (g) removePreset(g.id); else { setSelected(i); applyPreset(i) } }}
                onAutoGrow={autoGrow}
@@ -806,7 +846,9 @@ export default function App() {
                 onCutMove={moveCut} onTrim={trimShot} onShotToPip={shotToPip}
                 onCopyItem={copyItem} canPaste={!!clipboard}
                 onPasteAt={(t, track) => clipboard && pasteAt(clipboard.o, Math.max(0, Math.min(t, plan.duration - 0.3)), track)}
-                onDeleteOverlay={deleteOverlay} onResize={resizeTl} busy={busy} pending={live?.pending || []} live={live} looks={looks}
+                onDeleteOverlay={deleteOverlay} onResize={resizeTl} onInsertClip={insertClip} onDeleteShot={deleteShot}
+                musicSel={musicSel} onSelectMusic={() => { setSelected(null); setOvSel(null); setMusicSel(true) }} onDeleteMusic={deleteMusic}
+                onDropMusic={(p) => changeMusic(p)} busy={busy} pending={live?.pending || []} live={live} looks={looks}
                 keySel={keySel} onKeySelect={setKeySel} onKeyTime={keyTime} metronome={metronome} setMetronome={setMetronome} />
       {toastsEl}
     </div>

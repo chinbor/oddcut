@@ -9,7 +9,7 @@ const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
 // drawing styles (click = draw the selected shot), music (switch the song).
 export default function Library({ tabRequest, looks, activeSticker, activeStyle, onAddSticker, onApplyStyle, music, songs, onPickSong,
                                   onBrowseMusic, busy, rail, clips = [], clipThumbs = {}, onAddOverlay, growTarget, onGrow,
-                                  onGrowAll, growAllOn, onAddGrid, onAutoGrow, grownShots = [], onSeekShot }) {
+                                  onGrowAll, growAllOn, onAddGrid, onAutoGrow, grownShots = [], onSeekShot, onImport, onRemoveClip }) {
   const [tab, setTab] = useState('sticker')
   useEffect(() => { if (tabRequest) { setTab(tabRequest.tab); if (rail) setOpen(true) } }, [tabRequest])
   const [open, setOpen] = useState(false)          // icon-rail mode: the panel flies out
@@ -29,6 +29,7 @@ export default function Library({ tabRequest, looks, activeSticker, activeStyle,
         <div className="lib-body">
           {tab === 'clips' && (
             <>
+              <button className="primary wide import-btn" disabled={busy} onClick={onImport}><Icon name="plus" size={18} />导入（视频、图片、音乐）</button>
               <div className="lib-group">
                 <h3>宫格 / 分屏</h3>
                 <div className="grid-tiles">
@@ -45,12 +46,15 @@ export default function Library({ tabRequest, looks, activeSticker, activeStyle,
                 </div>
               </div>
               <h3 className="lib-sub">视频素材</h3>
-              <p className="hint">拖到时间轴的「画中画」轨道上，叠在画面上面播放；或点一下加到播放头这里</p>
+              <p className="hint">拖到主轨上插入；拖到主轨上方成为画中画；右键可从项目里移除</p>
               <div className="clip-tiles">
                 {clips.map((c) => (
                   <button key={c.path} className="clip-tile" disabled={busy} draggable
                           onDragStart={(e) => { e.dataTransfer.setData('application/x-oddcut-clip', c.path); e.dataTransfer.effectAllowed = 'copy' }}
-                          onClick={() => onAddOverlay(c.path)} title={`${c.name} · ${c.duration.toFixed(1)} 秒：拖到画中画轨道，或点一下添加`}>
+                          onClick={() => onAddOverlay(c.path)} onContextMenu={(e) => { e.preventDefault(); onRemoveClip(c.path) }}
+                          title={`${c.name} · ${c.duration.toFixed(1)} 秒：拖到主轨插入，拖到上方成为画中画（右键：从项目里移除）`}>
+                    <i className="ct-del" title="从项目里移除（不会删电脑上的文件）"
+                       onClick={(e) => { e.stopPropagation(); onRemoveClip(c.path) }}><Icon name="close" size={12} /></i>
                     <span className="ct-pic">{clipThumbs[c.path] ? <img src={clipThumbs[c.path]} alt="" draggable={false} /> : <i className="spin" />}
                       <small>{c.duration.toFixed(1)}s</small></span>
                     <span className="ct-name">{c.name}</span>
@@ -90,11 +94,12 @@ export default function Library({ tabRequest, looks, activeSticker, activeStyle,
                 <span><b>{music?.name || fileName(music?.path)}</b><small>{music?.tempo ? `${Math.round(music.tempo)} BPM · 正在用` : '正在用'}</small></span>
               </div>
               {songs.filter((s) => fileName(s) !== (music?.name || fileName(music?.path))).map((s) => (
-                <button key={s} className="song-card" disabled={busy} onClick={() => onPickSong(s)}>
+                <button key={s} className="song-card" disabled={busy} onClick={() => onPickSong(s)} draggable
+                        onDragStart={(e) => { e.dataTransfer.setData('application/x-oddcut-music', s); e.dataTransfer.effectAllowed = 'copy' }}>
                   <Icon name="music" size={22} /><span><b>{fileName(s)}</b><small>换成这首</small></span>
                 </button>
               ))}
-              <button className="ghost wide" disabled={busy} onClick={onBrowseMusic}><Icon name="plus" size={18} />从电脑里选音乐…</button>
+              <button className="ghost wide" disabled={busy} onClick={onImport}><Icon name="plus" size={18} />导入音乐…</button>
             </>
           )}
         </div>
