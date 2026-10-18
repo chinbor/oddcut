@@ -40,6 +40,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
   const [trimDrag, setTrimDrag] = useState(null)   // a main-track clip's edge being dragged: {i, side, d}
   const [pipGhost, setPipGhost] = useState(null)   // a main-track clip dragged over a 画中画 track: {k, t, len}
   const [menu, setMenu] = useState(null)           // right-click menu: {x, y, item: {shot} | {ov}, t, k}
+  const [guide, setGuide] = useState(null)         // a 画中画 being dragged snapped here: {t, text}
   useEffect(() => {
     if (!menu) return
     const close = () => setMenu(null)
@@ -309,11 +310,34 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
 
   // picture-in-picture lanes: drag a clip in time and between lanes, its ends to trim; beats pull like cuts do
   const LANE_H = 32
+  const OV_LANES = 6
   // magnetic: a beat pulls only when the pointer is within a few pixels of it, so the clip follows the mouse
   const snapT = (tt, ev, lo = 0, hi = duration) => {
     if (snap === ev.altKey || !beats.length) return tt
     const b = beats.reduce((m, v) => (Math.abs(v.t - tt) < Math.abs(m.t - tt) ? v : m), beats[0])
     return b.t >= lo && b.t <= hi && Math.abs(b.t - tt) * scale < 8 ? b.t : tt
+  }
+  // where a dragged 画中画 edge sticks (within 8 px), as in 剪映: the main track's cuts, the playhead, the edges
+  // of the other 画中画, and the beats while 切点对齐节拍 is on. Alt drags freely.
+  const snapTo = (tt, ev, o) => {
+    if (ev.altKey) return null
+    let best = null
+    const consider = (t, text, k = null, weak = 0) => {           // weak: a beat gives way to a cut nearby
+      const d = Math.abs(t - tt) * scale
+      if (d < 8 && (!best || d + weak < best.d + best.weak)) best = { t, text, k, d, weak }
+    }
+    plan.shots.forEach((s, k) => k > 0 && consider(s.t_start, `镜头 ${k + 1} 的开头`, k))
+    consider(time, '播放头')
+    overlays.forEach((x) => { if (x.id !== o.id) { consider(x.t_start, '画中画的边'); consider(x.t_end, '画中画的边') } })
+    if (snap) beats.forEach((b) => consider(b.t, b.half ? '半拍' : `第 ${b.no} 拍`, null, 6))
+    return best
+  }
+  // ending on the cut into a shot of the same clip: the 画中画's footage is set so its last frame runs straight
+  // into that shot's first one (no jump at the cut)
+  const seam = (o, sn, t0, t1) => {
+    if (!sn || sn.k == null || plan.shots[sn.k].clip_path !== o.clip) return null
+    const src = plan.shots[sn.k].src_start - (t1 - t0)
+    return src >= 0 ? { src_start: src, text: '画面无缝衔接' } : { text: '素材前面不够长，接不上' }
   }
   // the bar itself moves while dragging (once per frame); the edit is handed over when let go
   const ovDrag = (e, o, what) => {
@@ -330,29 +354,42 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     const step = () => {
       id = 0
       const ev = last
+      let sn = null, sm = null
       if (what === 'body') {
         let t0 = Math.min(duration - len, Math.max(0, o.t_start + (ev.clientX - x0) / scale))
-        t0 = snapT(t0, ev, 0, duration - len)
-        const track = Math.min(2, Math.max(0, o.track - Math.round((ev.clientY - y0) / LANE_H)))
-        patch = { t_start: t0, t_end: t0 + len, track }
+        const a = snapTo(t0, ev, o), b = snapTo(t0 + len, ev, o)
+        sn = a && (!b || a.d + a.weak <= b.d + b.weak) ? a : b
+        if (sn) t0 = Math.min(duration - len, Math.max(0, sn === a ? sn.t : sn.t - len))
+        if (sn === b) sm = seam(o, b, t0, t0 + len)
+        const track = Math.min(OV_LANES - 1, Math.max(0, o.track - Math.round((ev.clientY - y0) / LANE_H)))
+        patch = { t_start: t0, t_end: t0 + len, track, ...(sm?.src_start != null ? { src_start: sm.src_start } : {}) }
         bar.style.transform = `translate(${(t0 - o.t_start) * scale}px, ${(o.track - track) * LANE_H}px)`
       } else if (what === 'in') {
         const lo = Math.max(0, o.t_start - o.src_start), hi = o.t_end - 0.3
-        const t0 = snapT(Math.min(hi, Math.max(lo, tAt(ev.clientX))), ev, lo, hi)
+        let t0 = Math.min(hi, Math.max(lo, tAt(ev.clientX)))
+        sn = snapTo(t0, ev, o)
+        if (sn && sn.t >= lo && sn.t <= hi) t0 = sn.t; else sn = null
         patch = { t_start: t0, src_start: o.src_start + (t0 - o.t_start) }
         bar.style.left = `${x(t0) + 1}px`; bar.style.width = `${Math.max(8, (o.t_end - t0) * scale - 2)}px`
       } else {
         const lo = o.t_start + 0.3, hi = Math.min(duration, o.t_start + clipLen - o.src_start)
-        const t1 = snapT(Math.min(hi, Math.max(lo, tAt(ev.clientX))), ev, lo, hi)
-        patch = { t_end: t1 }
+        let t1 = Math.min(hi, Math.max(lo, tAt(ev.clientX)))
+        sn = snapTo(t1, ev, o)
+        if (sn && sn.t >= lo && sn.t <= duration) t1 = sn.t; else sn = null
+        sm = seam(o, sn, o.t_start, t1)
+        patch = { t_end: t1, ...(sm?.src_start != null ? { src_start: sm.src_start } : {}) }
         bar.style.width = `${Math.max(8, (t1 - o.t_start) * scale - 2)}px`
       }
+      bar.dataset.tip = `${patch.t_start != null ? patch.t_start.toFixed(2) : o.t_start.toFixed(2)}s · 时长 ${((patch.t_end ?? o.t_end) - (patch.t_start ?? o.t_start)).toFixed(2)}s`
+      setGuide(sn ? { t: sn.t, text: (what === 'body' && sn.t !== patch.t_start ? '结尾对齐' : what === 'out' ? '结尾对齐' : '开头对齐') + sn.text + (sm ? ` · ${sm.text}` : '') } : null)
     }
     const mv = (ev) => { last = ev; if (!id) id = requestAnimationFrame(step) }
     const up = () => {
       window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up)
       if (id) { cancelAnimationFrame(id); step() }
       bar.classList.remove('dragging')
+      delete bar.dataset.tip
+      setGuide(null)
       bar.style.cssText = css                    // React takes over again from here
       if (patch) { flushSync(() => onOverlayDraft(o.id, patch)); onOverlayCommit(o.id) }
     }
@@ -438,6 +475,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
           </div>
 
           <div className="beat-lines" style={{ left: 0 }}>
+            {plan.shots.slice(1).map((s, j) => <i key={`cl${j}`} className="cut-line" style={{ left: x(s.t_start) }} />)}
             {beats.map((b) => {
               const hot = near != null && Math.abs(b.t - near) < 1.2
               const target = cutDrag?.beat && cutDrag.beat.t === b.t
@@ -572,6 +610,9 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
             </div>
           )}
           <div className="playhead" style={{ left: x(time) }} onPointerDown={scrub} />
+          {guide && (
+            <div className="cut-ghost snap-guide" style={{ left: x(guide.t) }}><span>{guide.text}</span></div>
+          )}
           {trimDrag && (
             <div className="cut-ghost free" style={{ left: x(plan.shots[trimDrag.i].t_end + trimDrag.d) }}>
               <span>{(plan.shots[trimDrag.i].t_end - plan.shots[trimDrag.i].t_start + trimDrag.d).toFixed(1)} 秒</span>

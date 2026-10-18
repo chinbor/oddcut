@@ -563,3 +563,10 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .lasso-pt { fill: #fff; stroke: #222; stroke-width: 1; }
 .lasso-first { fill: var(--accent); stroke: #fff; stroke-width: 2; }
 .cutbar .segmented.mini button { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ---------------------------------------------------------------- 画中画 lining up with the cuts */
+.cut-line { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed rgba(255,255,255,.28); }
+.snap-guide { background: #ffd400; box-shadow: 0 0 8px rgba(255,212,0,.7); z-index: 7; }
+.snap-guide span { background: #ffd400; color: #1b1600; font-weight: 600; }
+.bar.ov.dragging[data-tip]::after { content: attr(data-tip); position: absolute; left: 0; bottom: calc(100% + 3px); padding: 1px 6px; border-radius: 4px;
+  background: #fff; color: #121317; font-size: 11px; font-weight: 600; white-space: nowrap; z-index: 9; pointer-events: none; }
