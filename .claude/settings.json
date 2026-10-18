@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./output/**)",
+      "Read(./.venv/**)",
+      "Read(./desktop/node_modules/**)",
+      "Read(./desktop/dist/**)",
+      "Read(./assets/models/**)",
+      "Read(./assets/public/clips/**)",
+      "Read(./assets/public/music/**)",
+      "Read(./assets/test/**)",
+      "Read(./assets/reference/**)",
+      "Read(./docs/screens_v05/**)",
+      "Read(./package-lock.json)",
+      "Read(./desktop/package-lock.json)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python code/tools/session_context.py"
+          }
+        ]
+      }
+    ]
+  }
+}

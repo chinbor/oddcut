@@ -1,6 +1,6 @@
 # AGENTS.md：给接手的 AI agent 看
 
-不管你是 Claude Code、Codex、Cursor 还是别的 agent，开始工作前先读完这份，再读 [docs/开发记录.md](docs/开发记录.md) 的「现在做到哪」。
+不管你是 Claude Code、Codex、Cursor 还是别的 agent，开始工作前先读完这份，再运行 `python code/tools/session_context.py`（打印最近提交、未提交改动、「现在做到哪」和「下一步」，约 40 行）。Claude Code 会在启动时自动跑它。
 给人看的使用说明在 [README.md](README.md)。
 
 ## 项目是什么
@@ -53,6 +53,13 @@ output/             所有生成结果（不进仓库）；output/app/<时间>/ 
 
 画笔修边、区域标签（前景 / 地面 / 中景 / 天空）、缓动曲线选项、运动模糊滑块、步骤说明和「为什么」的解释文字、框选抠像、轨道上的眼睛 / 锁按钮、音乐静音开关（要删就直接删音乐）。
 
+## 质量门槛（每次提交前）
+
+- `.venv\Scripts\python code\tools\check.py`：语法、CRLF、模块能否导入，几秒钟。
+- 改了渲染、plan 或界面，加 `--full`：再跑老方案渲染比对（基准在 `code/tools/check_baseline.json`）和界面构建，约一分钟。
+- pre-commit 钩子会自动跑快速检查。新克隆后启用一次：`git config core.hooksPath .githooks`。
+- 检查没过不要提交，也不要用 `--no-verify` 绕过。老渲染变了只有用户同意才能 `--update-baseline`。
+
 ## 怎么跑
 
 - 桌面端：双击 `desktop\启动Oddcut.bat`（构建界面后打开窗口）。开发：`cd desktop && npm run dev`。
@@ -64,7 +71,7 @@ output/             所有生成结果（不进仓库）；output/app/<时间>/ 
 1. **一定要简化。** 不清楚交互怎么做就照抄剪映 / 抖音。不做用户没要求的功能，发现多余的就从界面删掉。
 2. **效果必须可编辑。** 任何自动效果（万物生长、手绘、贴纸、转场）都要由用户能看到、能改、能亲手复现的编辑器元素组成：画中画图层 + 抠像 + 关键帧。不允许黑盒渲染。只放在合适的镜头上。
 3. **现阶段先做手动编辑体验**，自动生成暂停。
-4. **老渲染结果不能变：** 老方案的 CLI 渲染 framemd5 必须保持 `86b672000989ebefc4803b2cec152d39`，改渲染代码后要验证。
+4. **老渲染结果不能变：** 改渲染代码后跑 `check.py --full`，老方案渲染的帧哈希必须等于 `code/tools/check_baseline.json` 里的值（`e92bf85b…`，只算每帧哈希，和早期整份 framemd5 `86b67200…` 不是一个数）。
 5. **提交：** `git commit -s`（DCO 必需）；`code/oddcut` 里的 .py 是 CRLF，保持不变；**不要 push，除非用户明确说推**。
 6. **依赖、模型、素材必须和 AGPL 兼容**，不能用「仅限非商用」的东西。
 7. 和用户交流用中文，先说结论，简短。
@@ -83,4 +90,10 @@ output/             所有生成结果（不进仓库）；output/app/<时间>/ 
 3. 用户新定的规则或否决的功能，当场写进本文件对应的小节。
 4. 给用户看的截图或视频存到 `output\给你看的截图\`，告诉用户这个路径。
 
-接手时：读本文件 → 读开发记录 → `git status` 和 `git log --oneline -15` → 从「现在做到哪」继续。
+接手时：读本文件 → `python code/tools/session_context.py` → 从「现在做到哪」继续。
+
+## 工作方式（省 token）
+
+- 一次只做一件事，做完就提交，提交说明写清做了什么，方便下一个 agent 用 `git log` 了解历史。
+- 先 grep 定位，再按行号读需要的那一段，不要整文件读大文件。
+- 做之前在开发记录的「现在做到哪」写一行「正在做：xxx」，做完改成结果。中途断了，下一个 agent 就知道停在哪。
