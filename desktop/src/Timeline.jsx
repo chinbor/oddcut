@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import Icon from './icons.jsx'
+import { linkSrc } from './pip.js'
 
 // Bottom timeline: ruler + playhead, picture / sticker / drawn / music tracks, beat lines through all of them.
 // Wheel zooms around the pointer (Shift + wheel or a touchpad scrolls sideways). Click a clip to select it and
@@ -332,13 +333,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     if (snap) beats.forEach((b) => consider(b.t, b.half ? '半拍' : `第 ${b.no} 拍`, null, 6))
     return best
   }
-  // ending on the cut into a shot of the same clip: the 画中画's footage is set so its last frame runs straight
-  // into that shot's first one (no jump at the cut)
-  const seam = (o, sn, t0, t1) => {
-    if (!sn || sn.k == null || plan.shots[sn.k].clip_path !== o.clip) return null
-    const src = plan.shots[sn.k].src_start - (t1 - t0)
-    return src >= 0 ? { src_start: src, text: '画面无缝衔接' } : { text: '素材前面不够长，接不上' }
-  }
+  const srcRange = (a, len) => `原视频 ${a.toFixed(1)}–${(a + len).toFixed(1)}s`
   // the bar itself moves while dragging (once per frame); the edit is handed over when let go
   const ovDrag = (e, o, what) => {
     if (e.button !== 0) return                  // allowed while an edit runs: the drop waits for it
@@ -354,15 +349,14 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     const step = () => {
       id = 0
       const ev = last
-      let sn = null, sm = null
+      let sn = null
       if (what === 'body') {
         let t0 = Math.min(duration - len, Math.max(0, o.t_start + (ev.clientX - x0) / scale))
         const a = snapTo(t0, ev, o), b = snapTo(t0 + len, ev, o)
         sn = a && (!b || a.d + a.weak <= b.d + b.weak) ? a : b
         if (sn) t0 = Math.min(duration - len, Math.max(0, sn === a ? sn.t : sn.t - len))
-        if (sn === b) sm = seam(o, b, t0, t0 + len)
         const track = Math.min(OV_LANES - 1, Math.max(0, o.track - Math.round((ev.clientY - y0) / LANE_H)))
-        patch = { t_start: t0, t_end: t0 + len, track, ...(sm?.src_start != null ? { src_start: sm.src_start } : {}) }
+        patch = { t_start: t0, t_end: t0 + len, track }
         bar.style.transform = `translate(${(t0 - o.t_start) * scale}px, ${(o.track - track) * LANE_H}px)`
       } else if (what === 'in') {
         const lo = Math.max(0, o.t_start - o.src_start), hi = o.t_end - 0.3
@@ -376,12 +370,16 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
         let t1 = Math.min(hi, Math.max(lo, tAt(ev.clientX)))
         sn = snapTo(t1, ev, o)
         if (sn && sn.t >= lo && sn.t <= duration) t1 = sn.t; else sn = null
-        sm = seam(o, sn, o.t_start, t1)
-        patch = { t_end: t1, ...(sm?.src_start != null ? { src_start: sm.src_start } : {}) }
+        patch = { t_end: t1 }
         bar.style.width = `${Math.max(8, (t1 - o.t_start) * scale - 2)}px`
       }
-      bar.dataset.tip = `${patch.t_start != null ? patch.t_start.toFixed(2) : o.t_start.toFixed(2)}s · 时长 ${((patch.t_end ?? o.t_end) - (patch.t_start ?? o.t_start)).toFixed(2)}s`
-      setGuide(sn ? { t: sn.t, text: (what === 'body' && sn.t !== patch.t_start ? '结尾对齐' : what === 'out' ? '结尾对齐' : '开头对齐') + sn.text + (sm ? ` · ${sm.text}` : '') } : null)
+      if (o.link) {                                // 跟随主画面: the footage follows the shot's source clock
+        const l = linkSrc({ ...o, ...patch }, plan.shots)
+        patch.src_start = l.src_start
+      }
+      const n = { ...o, ...patch }
+      bar.dataset.tip = `${n.t_start.toFixed(2)}s · 时长 ${(n.t_end - n.t_start).toFixed(2)}s · ${srcRange(n.src_start, n.t_end - n.t_start)}`
+      setGuide(sn ? { t: sn.t, text: (what === 'body' && sn.t !== patch.t_start ? '结尾对齐' : what === 'out' ? '结尾对齐' : '开头对齐') + sn.text } : null)
     }
     const mv = (ev) => { last = ev; if (!id) id = requestAnimationFrame(step) }
     const up = () => {
@@ -454,6 +452,23 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
         </button>
         <span className="legend"><i className="lg-on" />踩点的切点<i className="lg-off" />没踩点</span>
         <span className="spacer" />
+        {(() => {
+          const si = plan.shots.findIndex((s) => time >= s.t_start && time < s.t_end)
+          if (si < 0) return null
+          const s = plan.shots[si]
+          const ss = s.src_start + time - s.t_start
+          const ons = overlays.filter((o) => !o.grid && time >= o.t_start && time < o.t_end).sort((a, b) => a.track - b.track)
+          return (
+            <span className="ph-read" title="播放头这一刻，每一层用的是它原视频里的第几秒">
+              画面 镜头 {si + 1} · 原视频 {ss.toFixed(2)}s
+              {ons.map((o) => {
+                const os = (o.src_start || 0) + time - o.t_start
+                const same = o.clip === s.clip_path && Math.abs(os - ss) < 0.5 / fps
+                return <span key={o.id}> ｜ 画中画 {o.track + 1} · 原视频 {os.toFixed(2)}s{same && <b className="same"> ✓ 同一帧</b>}</span>
+              })}
+            </span>
+          )
+        })()}
         {live && live.total > live.done && (
           <span className="live-note"><i className="spin" />正在把贴纸、手绘和转场加进预览（{live.done} / {live.total}）</span>
         )}
@@ -494,12 +509,16 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                 {mine.map((o) => (
                   <div key={o.id} className={`bar ov ${ovSel === o.id ? 'sel' : ''} ${o.group ? 'grp' : ''}`}
                        style={{ left: x(o.t_start) + 1, width: Math.max(8, (o.t_end - o.t_start) * scale - 2) }}
-                       onPointerDown={(e) => ovDrag(e, o, 'body')} onContextMenu={(e) => openMenu(e, { ov: o.id }, k)} title={`${o.name} · ${o.t_start.toFixed(2)} – ${o.t_end.toFixed(2)} 秒（拖动改时间/轨道，拖两端剪短）`}>
+                       onPointerDown={(e) => ovDrag(e, o, 'body')} onContextMenu={(e) => openMenu(e, { ov: o.id }, k)} title={`${o.name} · ${o.t_start.toFixed(2)} – ${o.t_end.toFixed(2)} 秒 · ${srcRange(o.src_start || 0, o.t_end - o.t_start)}（拖动改时间/轨道，拖两端剪短）`}>
                     <i className="edge l" onPointerDown={(e) => ovDrag(e, o, 'in')} />
                     {o.anim_in && <i className="anim-wedge in" style={{ width: o.anim_in.beats * beatLen * scale }} title="入场动画" />}
                     {o.anim_out && <i className="anim-wedge out" style={{ width: o.anim_out.beats * beatLen * scale }} title="出场动画" />}
                     {o.grid ? <i className="bar-grid" /> : clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} />}
-                    <span>{o.fx?.kind === 'drawn' ? `手绘 · ${o.group?.label || ''}` : o.group ? `万物生长 ${o.group.layer}/${o.group.of} · ${o.group.label}` : o.name}</span>
+                    {o.link && <i className="link-badge" title="跟随主画面：按原视频时间和同一个视频的镜头对齐，挪动或修剪后自动接上（点一下取消）"
+                                  onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); flushSync(() => onOverlayDraft(o.id, { link: false, short: undefined })); onOverlayCommit(o.id) }}>🔗</i>}
+                    <span>{o.fx?.kind === 'drawn' ? `手绘 · ${o.group?.label || ''}` : o.group ? `万物生长 ${o.group.layer}/${o.group.of} · ${o.group.label}` : o.name}
+                      {!o.grid && <small className="srcr">{srcRange(o.src_start || 0, o.t_end - o.t_start)}</small>}
+                      {o.short && <small className="short">原视频前面不够 {o.short} 秒</small>}</span>
                     {(o.fx?.keys || []).map((k, j) => (
                       <i key={`fx${j}`} className="diamond fx" style={{ left: k.t * scale - 5 }} title={`绘制进度 ${Math.round(k.v * 100)}% · ${k.t.toFixed(2)} 秒`}
                          onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); onSelectOverlay(o.id); onSeek(o.t_start + k.t + 0.001) }} />
@@ -525,7 +544,8 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
                 <div key={i} className={`clip ${selected === i ? 'sel' : ''} ${pending.includes(i) ? 'pending' : ''} ${shotDrag?.src === i ? 'lifted' : ''}`}
                      style={{ left: x(s.t_start) + 1, width: w, ...(tr ? { transform: `translateX(${tr}px)` } : shift(i)) }}
                      onPointerDown={(e) => clipDown(e, i)} onContextMenu={(e) => openMenu(e, { shot: i })}
-                     title={`镜头 ${i + 1} · ${s.clip} · ${(s.t_end - s.t_start).toFixed(1)} 秒（拖两边改长短，左右拖调换顺序，往上拖成画中画）`}>
+                     title={`镜头 ${i + 1} · ${s.clip} · ${(s.t_end - s.t_start).toFixed(1)} 秒 · ${srcRange(s.src_start, s.t_end - s.t_start)}（拖两边改长短，左右拖调换顺序，往上拖成画中画）`}>
+                  {w > 96 && <span className="srcr main">{srcRange(s.src_start, s.t_end - s.t_start)}</span>}
                   {selected === i && !shotDrag && <i className="trim l" onPointerDown={(e) => trimDown(e, i, 'in')} title="拖动剪掉开头" />}
                   {selected === i && !shotDrag && <i className="trim r" onPointerDown={(e) => trimDown(e, i, 'out')} title="拖动改结尾（后面的片段跟着移动）" />}
                   <div className="strip">{filmstrip(i, w).map((src, k) => <img key={k} src={src} alt="" draggable={false} />)}</div>
@@ -615,7 +635,8 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
           )}
           {trimDrag && (
             <div className="cut-ghost free" style={{ left: x(plan.shots[trimDrag.i].t_end + trimDrag.d) }}>
-              <span>{(plan.shots[trimDrag.i].t_end - plan.shots[trimDrag.i].t_start + trimDrag.d).toFixed(1)} 秒</span>
+              <span>{(plan.shots[trimDrag.i].t_end - plan.shots[trimDrag.i].t_start + trimDrag.d).toFixed(2)} 秒 · {srcRange(
+                plan.shots[trimDrag.i].src_start + (trimDrag.side === 'in' ? -trimDrag.d : 0), plan.shots[trimDrag.i].t_end - plan.shots[trimDrag.i].t_start + trimDrag.d)}</span>
             </div>
           )}
           {zoomNote && <div className="zoom-note" style={{ left: (scroller.current?.scrollLeft || 0) + (width / 2) }}>{zoomNote}</div>}

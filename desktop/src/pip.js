@@ -108,3 +108,17 @@ export function gridCells(o, bw, bh) {
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) out.push({ x: c * (cw + gap), y: r * (ch + gap), w: cw, h: ch })
   return out
 }
+
+// 跟随主画面 (as pipeline.link_overlays): a linked 画中画 reads the source clock of the nearest shot of its clip
+export function linkSrc(o, shots) {
+  if (!o.link) return o
+  const same = shots.filter((s) => s.clip_path === o.clip)
+  if (!same.length) return o
+  const gap = (s) => Math.max(0, s.t_start - o.t_end, o.t_start - s.t_end)
+  const s = same.reduce((b, v) => {
+    const gb = Math.round(gap(b) * 1000), gv = Math.round(gap(v) * 1000)
+    return gv < gb || (gv === gb && v.t_start > b.t_start) ? v : b
+  })
+  const src = s.src_start - (s.t_start - o.t_start)
+  return { ...o, src_start: Math.max(0, src), short: src < -1e-3 ? Math.round(-src * 100) / 100 : undefined }
+}

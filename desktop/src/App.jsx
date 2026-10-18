@@ -5,7 +5,7 @@ import Toolbar from './Toolbar.jsx'
 import NewProject from './NewProject.jsx'
 import Properties from './Properties.jsx'
 import OverlayProps from './OverlayProps.jsx'
-import { keyPose, LAYOUTS, withKey } from './pip.js'
+import { keyPose, LAYOUTS, linkSrc, withKey } from './pip.js'
 import Timeline from './Timeline.jsx'
 import Viewer from './Viewer.jsx'
 
@@ -449,14 +449,14 @@ export default function App() {
   const copyItem = ({ ov, shot: si }) => {
     const o = ov != null ? overlays.find((x) => x.id === ov) : null
     if (o) { const { group, fx, ...rest } = o; setClipboard({ o: rest }); toast('已复制。把播放头移到要放的位置，按 Ctrl+V 粘贴') }
-    else if (si != null) { setClipboard({ o: shotAsOverlay(si) }); toast('已复制这一段。把播放头移到要放的位置，按 Ctrl+V 粘贴成画中画') }
+    else if (si != null) { setClipboard({ o: { ...shotAsOverlay(si), link: true } }); toast('已复制这一段。把播放头移到要放的位置，按 Ctrl+V 粘贴成画中画') }
   }
   const copyClip = () => copyItem(curOv ? { ov: curOv.id } : { shot: shotSel ? selected : null })
   const pasteAt = (src, t0, track = null) => {
     const dur = plan.duration
     const len = Math.min(src.t_end - src.t_start, dur - t0)
     if (len < 0.3) { toast('这里离结尾太近，放不下'); return }
-    const o = { ...src, id: newId(), t_start: t0, t_end: t0 + len }
+    const o = linkSrc({ ...src, id: newId(), t_start: t0, t_end: t0 + len }, plan.shots)
     const tr = track != null && freeTrack(o.t_start, o.t_end) != null && !overlays.some((x) => x.track === track && x.t_start < o.t_end - 1e-3 && o.t_start < x.t_end - 1e-3)
       ? track : freeTrack(o.t_start, o.t_end)
     if (tr == null) { toast('这里的画中画轨道都占满了'); return }
@@ -465,7 +465,7 @@ export default function App() {
   }
   const pasteClip = () => { if (clipboard) pasteAt(clipboard.o, Math.max(0, Math.min(time, plan.duration - 0.3))) }
   // a main-track piece dragged down onto a 画中画 track
-  const shotToPip = (i, track, t0) => pasteAt(shotAsOverlay(i), Math.max(0, t0), track)
+  const shotToPip = (i, track, t0) => pasteAt({ ...shotAsOverlay(i), link: true }, Math.max(0, t0), track)
   // 修剪: a main-track piece's edge dragged (the pieces after it move up / back)
   const trimShot = guard(async (i, side, t, snap) => {
     commit(await runJob({ kind: 'trim', analysis: analysis.analysis, plan: plan.plan, index: i, side, t, snap }))

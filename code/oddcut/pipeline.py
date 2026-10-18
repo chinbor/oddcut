@@ -1064,6 +1064,8 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
                 "opacity": round(num(o.get("opacity"), 0.05, 1, 1.0), 3),
                 "radius": round(num(o.get("radius"), 0, 0.5, 0.0), 3), "border": bool(o.get("border")),
                 "blend": o.get("blend") if o.get("blend") in BLENDS else "normal"}
+        if o.get("link") and not grid:
+            item["link"] = True
         if grid:
             item["grid"] = {"layout": grid["layout"], "cells": cells, "gap": round(num(grid.get("gap"), 0, 0.08, 0.01), 3)}
             item["name"] = {"2v": "上下分屏", "2h": "左右分屏", "3v": "三宫格", "4": "四宫格", "9": "九宫格"}[grid["layout"]]
@@ -1445,7 +1447,32 @@ def load_analysis(path: str | Path) -> Analysis:
     return Analysis(d["template"], d["template_path"], clips, music, Options(**d["options"]), d["stickers_tagged"])
 
 
+def link_overlays(p: Plan) -> None:
+    """跟随主画面: a 画中画 copied from a main-track shot (link) reads the same source clock as the shot of that clip
+    it is nearest to (the one it leads into when it sits just before it), so wherever they meet the frames match:
+    src_start = shot.src_start - (shot.t_start - t_start). Kept up to date whenever a plan is saved, so moving or
+    trimming either side keeps the seam. Not enough footage before the shot: from the clip's start, short = the
+    seconds missing."""
+    ovs = p.looks.get("overlays") or []
+    if not any(o.get("link") for o in ovs):
+        return
+    out = []
+    for o in ovs:
+        same = [s for s in p.shots if s.clip.path == o["clip"]] if o.get("link") else []
+        if same:
+            gap = lambda s: max(0.0, s.t_start - o["t_end"], o["t_start"] - s.t_end)
+            s = min(same, key=lambda s: (round(gap(s), 3), -s.t_start))
+            src = s.src_start - (s.t_start - o["t_start"])
+            o = {k: v for k, v in o.items() if k != "short"}
+            o["src_start"] = round(max(0.0, src), 3)
+            if src < -1e-3:
+                o["short"] = round(-src, 2)
+        out.append(o)
+    p.looks["overlays"] = out
+
+
 def save_plan(p: Plan, path: str | Path) -> None:
+    link_overlays(p)
     data = {
         "kind": "oddcut.plan", "version": FORMAT_VERSION, "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "aspect": p.template["output"]["aspect"], "resolution": list(output_size(p.template)),

@@ -630,6 +630,12 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
           <button className={`toggle loop ${loop ? 'on' : ''}`} onClick={() => setLoop((l) => !l)} aria-pressed={loop}
                   title="循环播放选中的这一段"><Icon name="refresh" size={16} />循环</button>
         )}
+        {(() => {
+          const o = overlays.find((x) => x.id === ovSel)
+          const c = o && !o.grid && time >= o.t_start && time < o.t_end ? (o.src_start || 0) + time - o.t_start
+            : shot && time >= shot.t_start && time < shot.t_end ? shot.src_start + time - shot.t_start : null
+          return c != null && <span className="src-tc" title="选中的这一段，播放头在它原视频里的第几秒">原视频 {c.toFixed(2)}s</span>
+        })()}
         <span className={`tc ${segment ? 'seg' : ''}`}>
           {segment
             ? <>片段 {segment.n} · {Math.min(Math.max(0, time - segment.start), segment.end - segment.start).toFixed(1)} / {(segment.end - segment.start).toFixed(1)}s</>
