@@ -28,7 +28,7 @@ def preview_size(w: int, h: int) -> tuple[int, int]:
 
 # the code that draws each kind of effect shot: part of the cache key, so editing it never reuses stale shots
 _EFFECT_CODE = {"sticker": ("stickers.py",), "cartoon": ("stickers.py", "cartoons.py"), "drawn": ("drawn_reveal.py",),
-                "manual": ("stickers.py", "cartoons.py", "sticker_stage.py"), "grow": ("growth.py",), "cutout": ("growth.py", "cutout.py")}
+                "manual": ("stickers.py", "cartoons.py", "sticker_stage.py"), "grow": ("growth.py",), "cutout": ("growth.py", "cutout.py", "sam.py")}
 
 
 @functools.lru_cache(maxsize=None)

@@ -11,7 +11,8 @@ What to cut out (overlay.mask = {"shape": "cutout", "target": ..., "brush": [...
 brush: [{"op": "add" | "sub", "r": radius (share of the box's short side), "pts": [[x, y], ...]}]
     strokes painted on top, in box coordinates (they stay put; the cut itself follows the picture).
 
-The first frame is cut, then the cut is carried through the clip along the optical flow and cleaned up (holes
+With MobileSAM there (sam.py) the outlines of the things and the skyline are redrawn by it, and a click on
+something YOLO has no name for asks it directly. The first frame is cut, then the cut is carried through the clip along the optical flow and cleaned up (holes
 filled, crumbs dropped, edges smoothed) so it stays one whole piece. Results are cached on disk.
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import growth
+from . import growth, sam
 
 SEG_H = growth.SEG_H
 PARTS = ("things", "ground", "mid", "far", "sky")
@@ -47,19 +48,96 @@ def _frames(path: str, start: float, frames: int, fps: float, aspect: float) -> 
     return out
 
 
+_ANALYSED: dict = {}
+
+
+def _iou(a: np.ndarray, b: np.ndarray) -> float:
+    return float((a & b).sum() / max(1, (a | b).sum()))
+
+
+def _inside(m: np.ndarray) -> tuple[int, int]:
+    d = cv2.distanceTransform(m.astype(np.uint8), cv2.DIST_L2, 5)
+    y, x = np.unravel_index(int(np.argmax(d)), d.shape)
+    return int(x), int(y)
+
+
+def _sam_things(im, things: list[np.ndarray]) -> list[np.ndarray]:
+    """Each thing's outline redrawn by MobileSAM (its box and a point inside it as the prompt); kept as it was
+    when MobileSAM sees something else there."""
+    h, w = things[0].shape if things else (0, 0)
+    out = []
+    for m in things:
+        ys, xs = np.nonzero(m)
+        px, py = int(0.03 * w), int(0.03 * h)
+        r = im.box(max(0, xs.min() - px), max(0, ys.min() - py), min(w - 1, xs.max() + px), min(h - 1, ys.max() + py), pos=_inside(m))
+        if r is not None and _iou(r, m) >= 0.5:
+            r = growth._fill_holes(r)
+            for o in out:
+                r &= ~o
+            if r.mean() >= growth.MIN_THING:
+                out.append(r)
+                continue
+        out.append(m & ~np.logical_or.reduce(out) if out else m)
+    return out
+
+
+def _sam_sky(im, regions: dict) -> dict:
+    """The skyline redrawn by MobileSAM: points in the sky to keep, points low in the picture to leave out."""
+    sky = regions["sky"]
+    if sky.mean() < 0.03:
+        return regions
+    h, w = sky.shape
+    d = cv2.distanceTransform(sky.astype(np.uint8), cv2.DIST_L2, 5)
+    pos = []
+    for x0 in (0, w // 3, 2 * w // 3):                     # one deep point in each third that has sky
+        part = d[:, x0:x0 + w // 3]
+        if part.max() > 3:
+            y, x = np.unravel_index(int(np.argmax(part)), part.shape)
+            pos.append((x0 + x, y))
+    low = ~sky & ~regions["things"]
+    neg = [(x, y) for x, y in ((w // 4, int(h * 0.9)), (w // 2, int(h * 0.9)), (3 * w // 4, int(h * 0.9))) if low[y, x]]
+    for p in ("far", "mid"):                               # and one on the buildings / far part under the sky
+        if regions[p].mean() > 0.02:
+            neg.append(_inside(regions[p]))
+    r = im.points(pos, neg) if pos else None
+    if r is None or _iou(r, sky) < 0.5:
+        return regions
+    r = growth._fill_holes(r) & ~regions["things"]
+    out = dict(regions)
+    under = next((p for p in ("far", "mid", "ground") if regions[p].any()), "far")
+    out[under] = (regions[under] | (sky & ~r)) & ~r
+    for p in ("ground", "mid", "far"):
+        if p != under:
+            out[p] = regions[p] & ~r
+    out["sky"] = r
+    return out
+
+
 def analyse(rgb: np.ndarray) -> dict:
     """Things and regions of one frame (SEG_H tall): what the cutout targets choose from."""
+    key = hashlib.sha1(rgb.tobytes()).hexdigest()
+    if key in _ANALYSED:
+        return _ANALYSED[key]
     things = growth._things(rgb)
     depth = growth.depth_map(rgb)
     if depth is not None:
         things = things + growth._depth_things(depth, things)
-    own, names, _ = growth.plan_layers(rgb, 5, things, depth)
-    regions = {p: np.zeros(rgb.shape[:2], bool) for p in PARTS}
-    for m, n in zip(own, names):
-        for p in n.split("+"):
-            if p in regions:
-                regions[p] |= m
-    return {"things": things, "regions": regions, "depth": depth}
+    with sam.image(rgb) as im:
+        if im is not None and things:
+            things = _sam_things(im, things)
+        own, names, _ = growth.plan_layers(rgb, 5, things, depth)
+        regions = {p: np.zeros(rgb.shape[:2], bool) for p in PARTS}
+        for m, n in zip(own, names):
+            for p in n.split("+"):
+                if p in regions:
+                    regions[p] |= m
+        if im is not None:
+            regions = _sam_sky(im, regions)
+    info = {"things": things, "regions": regions, "depth": depth, "rgb": rgb}
+    if len(_ANALYSED) > 6:
+        _ANALYSED.pop(next(iter(_ANALYSED)))
+    _ANALYSED[key] = info
+    return info
 
 
 def _clean(m: np.ndarray) -> np.ndarray:
@@ -101,6 +179,11 @@ def first_mask(info: dict, target: dict, shape) -> np.ndarray:
     if target.get("kind") == "object":
         x, y = int(np.clip(target["x"], 0, 0.999) * w), int(np.clip(target["y"], 0, 0.999) * h)
         hit = [m for m in info["things"] if m[y, x]]
+        if not hit and info.get("rgb") is not None:        # something YOLO has no name for: ask MobileSAM
+            with sam.image(info["rgb"]) as im:
+                r = im.points([(x, y)]) if im is not None else None
+            if r is not None and 0.005 <= r.mean() <= 0.7:
+                return growth._fill_holes(r)
         if not hit and info["things"]:                     # nearest thing to the click
             ys, xs = np.mgrid[0:h, 0:w]
             hit = [min(info["things"], key=lambda m: np.min(np.hypot(xs[m] - x, ys[m] - y)) if m.any() else 1e9)]

@@ -532,12 +532,37 @@ def grow_preset(analysis: Analysis, p: Plan, index: int, layers: int = 3, stagge
                 room = (s.t_end - s.t_start) - MIN_SHOT - 0.05
         except ValueError:
             pass
+    lead = 0.0
+    want = (n - 1) * step + rise
+    if want > room and not strict:
+        # still short (the next shot can't give more): start rising over the end of the shot before - it plays
+        # on underneath anyway; the layers then show this shot's footage from that much earlier
+        prev = p.shots[index - 1]
+        lead = max(0.0, min(want - room, prev.t_end - prev.t_start - MIN_SHOT - 0.05, s.src_start))
+        if lead < 0.02:
+            lead = 0.0
+        t_cut -= lead
+        room += lead
     if (n - 1) * step + rise > room:
         rise = max(0.3, min(rise, room - 0.15 * (n - 1)))
         step = max(0.15, (room - rise) / max(1, n - 1))
     land = (n - 1) * step + rise
     if land > room:
         raise ValueError("这个镜头太短，放不下万物生长")
+    prev = p.shots[index - 1]
+    clip_a = _clip_len(analysis, prev.clip.path)
+    if clip_a is not None and not strict:
+        # the shot before can't play on past the end of its clip: start that much earlier instead
+        over = t_cut + land - (prev.t_start + clip_a - prev.src_start - 0.05)
+        if over > 1e-3:
+            more = max(0.0, min(over, prev.t_end - prev.t_start - MIN_SHOT - 0.05 - lead, s.src_start - lead))
+            t_cut -= more
+            lead += more
+            room_a = prev.t_start + clip_a - prev.src_start - 0.05 - t_cut      # and if still not enough, faster
+            if land > room_a >= 0.3 + 0.15 * (n - 1):
+                rise = max(0.3, min(rise, room_a - 0.15 * (n - 1)))
+                step = (room_a - rise) / max(1, n - 1)
+                land = (n - 1) * step + rise
     for k, (target, label) in enumerate(specs[:-1]):
         wh = wholeness(_clean(first_mask(info, target, frame0.shape[:2])))
         if wh["area"] < 0.02 or wh["pieces"] > 4 or (k == 0 and wh["solidity"] < 0.35):
@@ -554,7 +579,7 @@ def grow_preset(analysis: Analysis, p: Plan, index: int, layers: int = 3, stagge
     new = []
     for k, (target, label) in enumerate(specs):
         t0 = t_cut + k * step
-        o = {"id": f"{gid}_{k + 1}", "track": base + (n - 1 - k), "clip": s.clip.path, "src_start": s.src_start + k * step,
+        o = {"id": f"{gid}_{k + 1}", "track": base + (n - 1 - k), "clip": s.clip.path, "src_start": s.src_start - lead + k * step,
              "t_start": t0, "t_end": t_cut + land + 1.0 / fps, "x": 0, "y": 0, "w": 1, "h": 1, "opacity": 1, "radius": 0,
              "mblur": 1.0, "keys": [{"t": 0, "x": 0.5, "y": 1.5, "s": 1, "r": 0, "e": "out"}, {"t": round(rise, 3), "x": 0.5, "y": 0.5, "s": 1, "r": 0}],
              "group": {"id": gid, "kind": "grow", "layer": k + 1, "of": n, "label": label}}
@@ -567,7 +592,7 @@ def grow_preset(analysis: Analysis, p: Plan, index: int, layers: int = 3, stagge
     looks = dict(q.looks)
     looks["overlays"] = _check_overlays(analysis, q.duration, others + new)
     looks["grow_presets"] = [g for g in (looks.get("grow_presets") or [])] + [
-        {"id": gid, "cut": round(t_cut, 4), "land": round(t_cut + land, 4), "layers": n, "stagger": stagger, "source": source}]
+        {"id": gid, "cut": round(t_cut + lead, 4), "land": round(t_cut + land, 4), "layers": n, "stagger": stagger, "source": source}]
     return replace(q, looks=looks), notes + more
 
 
