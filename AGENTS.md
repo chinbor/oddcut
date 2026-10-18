@@ -33,10 +33,16 @@ output/             所有生成结果（不进仓库）；output/app/<时间>/ 
 |---|---|
 | 时间线：轨道、拖动、裁剪、吸附、滚轮 | `desktop/src/Timeline.jsx`（725） |
 | 预览画面、画面上拖动、抠像点选 / 圈选 | `desktop/src/Viewer.jsx`（647） |
-| 全局状态、撤销、调后端、素材导入删除 | `desktop/src/App.jsx`（867） |
+| 全局状态和接线、贴纸草稿、画中画操作、快捷键 | `desktop/src/App.jsx`（686） |
+| 后端启动、跑任务轮询、实时预览 / 撤销重做 / 素材导入删除换歌 | `useJobs.js`（87）/ `useHistory.js`（19）/ `useMediaEdits.js`（57） |
+| 提示条 / 节拍器 / 接口小工具和任务进度文字 | `Toasts.jsx`（27）/ `useMetronome.js`（31）/ `api.js`（24） |
 | 工具栏 / 属性面板 / 画中画属性 / 素材库 | `Toolbar.jsx` `Properties.jsx` `OverlayProps.jsx` `Library.jsx` |
 | 后端接口、任务 | `code/oddcut/server.py`（901，开头注释列了全部接口） |
-| plan.json 的结构、编辑操作、保存 | `code/oddcut/pipeline.py`（1622，大文件，按函数名 grep） |
+| 分析 → 方案 → 渲染三步、换歌、换镜头素材 | `code/oddcut/pipeline.py`（263，也转导出下面各模块的名字，调用方照旧 `from .pipeline import`） |
+| Options / Analysis / Plan、缓存、plan.json / analysis.json 读写 | `code/oddcut/plan_data.py`（292） |
+| 手动编辑：镜头属性、切点、分割、修剪、重排、换歌对齐 | `code/oddcut/edits.py`（472） |
+| 导入素材、主轨插入 / 删除、移除素材 | `code/oddcut/media_edits.py`（137） |
+| 画中画字段检查 / 万物生长、手绘预设 | `code/oddcut/overlays.py`（171）/ `presets.py`（367） |
 | 渲染、画中画合成 | `render.py`（335）、`pip.py`（502，开头注释是 overlay 字段说明） |
 | 抠像 | `cutout.py`（288）、`sam.py`（83） |
 | 万物生长 / 手绘 / 贴纸（暂停中，别动） | `growth.py` `drawn_reveal.py`（1424） `stickers.py` `cartoons.py` |

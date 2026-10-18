@@ -8,43 +8,22 @@ import OverlayProps from './OverlayProps.jsx'
 import { keyPose, LAYOUTS, linkSrc, withKey } from './pip.js'
 import Timeline from './Timeline.jsx'
 import Viewer from './Viewer.jsx'
+import Toasts, { useToasts } from './Toasts.jsx'
+import { errText, fileName, mediaUrl, progressOf, q, vc } from './api.js'
+import { useBackend, useJob, useLivePreview } from './useJobs.js'
+import useHistory from './useHistory.js'
+import useMediaEdits from './useMediaEdits.js'
+import useMetronome from './useMetronome.js'
 
-const vc = window.oddcut
 const GROW_DEFAULT = { layers: 3, stagger: 'beat', blur: 1 }           // 万物生长: 3 layers, one per beat, full motion blur
-const q = (s) => encodeURIComponent(s)
-const mediaUrl = (p) => `media://v/?p=${encodeURIComponent(p)}`
-const fileName = (p) => (p ? p.split(/[\\/]/).pop() : '')
-const errText = (e) => String(e?.message || e).replace(/^Error invoking remote method 'api': Error: /, '')
-
-// what a blocking job is doing, for the progress pill / the 新建 button
-const STAGES = {
-  analyze: [['clips', 0.45, '分析素材画面'], ['music', 0.1, '分析音乐节拍'], ['stickers', 0.3, '找能加贴纸的东西'], ['drawn', 0.15, '找适合手绘的镜头']],
-  plan: [['cuts', 1, '排镜头']], music: [['music', 1, '分析新音乐']], edit: [['edit', 1, '换素材']], shot: [['edit', 1, '应用修改']],
-  cut: [['edit', 1, '调整切点']], retime: [['edit', 1, '对齐新节拍']], check: [['check', 1, '看这个镜头能不能画']],
-  render: [['effects', 0.5, '渲染贴纸和手绘'], ['shots', 0.45, '渲染镜头'], ['mux', 0.05, '合成音乐']],
-  grow_auto: [['score', 1, '挑适合万物生长的镜头']],
-}
-function progressOf(job) {
-  if (!job) return null
-  const st = STAGES[job.kind] || []
-  let label = st[0]?.[2] || '处理中'
-  let sum = 0, all = 0
-  st.forEach(([s, w, l]) => { all += w; const e = job.stages[s]; if (e) { sum += w * e.fraction; label = l + (e.total > 1 ? ` ${e.done}/${e.total}` : '') } })
-  return { label, fraction: job.status === 'done' ? 1 : all ? sum / all : 0 }
-}
 
 export default function App() {
-  const [backend, setBackend] = useState({ ready: false, error: null })
-  const [templates, setTemplates] = useState([])
-  const [looks, setLooks] = useState({ stickers: [], sticker_groups: [], drawn_styles: [] })
   const [view, setView] = useState('new')
   const [form, setForm] = useState({ clips: '', music: '', template: '', aspect: '9:16', duration: 18, autoStickers: true, drawn: true, autoGrow: true })
+  const { backend, templates, looks, width } = useBackend(setForm)
   const [folderInfo, setFolderInfo] = useState(null)
   const [analysis, setAnalysis] = useState(null)
   const [plan, setPlan] = useState(null)
-  const [job, setJob] = useState(null)
-  const [live, setLive] = useState(null)               // background preview: {video, done, total, pending}
-  const [previewSrc, setPreviewSrc] = useState(null)
   const [time, setTime] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -62,41 +41,15 @@ export default function App() {
   const [keySel, setKeySel] = useState(null)            // selected keyframe of the selected shot's sticker
   const [recordArmed, setRecordArmed] = useState(false) // 边播边拖 waiting for the user to grab the sticker
   const [metronome, setMetronome] = useState(false)
-  const [past, setPast] = useState([])
-  const [future, setFuture] = useState([])
-  const [toasts, setToasts] = useState([])
   const [songs, setSongs] = useState([])
   const [exported, setExported] = useState(null)        // full render of the current plan
   const [menu, setMenu] = useState(false)
-  const [width, setWidth] = useState(window.innerWidth)
   const videoRef = useRef(null)
-  const liveToken = useRef(0)
-  const liveJob = useRef(null)
-  const cancelRef = useRef(null)
-  const busy = !!job && (job.status === 'running' || job.status === 'queued')
+  const { toasts, setToasts, toast } = useToasts()
+  const { job, busy, runJob, cancelRef } = useJob()
+  const { live, previewSrc, setPreviewSrc, startLive } = useLivePreview(toast)
 
   // ---------------------------------------------------------------- basics
-  const toast = useCallback((text, kind = 'info', action = null) => {
-    const id = Math.random().toString(36).slice(2)
-    setToasts((t) => [...t.slice(-3), { id, text, kind, action }])
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' || action ? 9000 : 5000)
-  }, [])
-  useEffect(() => {
-    const onReady = async (s) => {
-      setBackend(s)
-      if (!s.ready) return
-      const t = await vc.api('GET', '/api/templates')
-      setTemplates(t.templates)
-      if (t.templates[0]) setForm((f) => ({ ...f, template: f.template || t.templates[0].id, duration: t.templates[0].duration || f.duration }))
-      vc.api('GET', '/api/looks').then(setLooks).catch(() => {})
-    }
-    vc.onBackendReady(onReady)
-    vc.onBackendExit((msg) => setBackend({ ready: false, error: msg }))
-    vc.backendStatus().then((s) => (s.ready || s.error) && onReady(s))
-    const onResize = () => setWidth(window.innerWidth)
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
   useEffect(() => {
     if (!form.clips || !backend.ready) { setFolderInfo(null); return }
     vc.api('GET', `/api/folder?path=${q(form.clips)}`).then(setFolderInfo).catch(() => setFolderInfo(null))
@@ -106,56 +59,11 @@ export default function App() {
     vc.api('GET', `/api/songs?near=${q(form.music)}`).then((r) => setSongs(r.songs)).catch(() => setSongs([]))
   }, [form.music, backend.ready])
 
-  const runJob = useCallback(async (body) => {
-    const { id } = await vc.api('POST', '/api/jobs', body)
-    cancelRef.current = () => vc.api('POST', `/api/jobs/${id}/cancel`)
-    try {
-      for (;;) {
-        const j = await vc.api('GET', `/api/jobs/${id}`)
-        setJob(j)
-        if (j.status === 'done') return j.result
-        if (j.status === 'cancelled') throw new Error('已取消')
-        if (j.status === 'failed') throw new Error(j.error)
-        await new Promise((r) => setTimeout(r, 250))
-      }
-    } finally {
-      cancelRef.current = null
-      setJob((j) => (j && j.status === 'running' ? { ...j, status: 'failed' } : j))
-    }
-  }, [])
   const guard = (fn) => async (...args) => {
     try { await fn(...args) } catch (e) { if (errText(e) !== '已取消') toast(errText(e), 'error') }
   }
 
-  // ---------------------------------------------------------------- live preview (先快后全)
-  const startLive = useCallback(async (p) => {
-    const token = ++liveToken.current
-    if (liveJob.current) vc.api('POST', `/api/jobs/${liveJob.current}/cancel`).catch(() => {})
-    setLive({ done: 0, total: 0, pending: [], starting: true })
-    let id
-    try { id = (await vc.api('POST', '/api/jobs', { kind: 'live', plan: p.plan })).id } catch (e) { toast(errText(e), 'error'); return }
-    liveJob.current = id
-    let shown = null
-    for (;;) {
-      if (token !== liveToken.current) return
-      let j
-      try { j = await vc.api('GET', `/api/jobs/${id}`) } catch { return }
-      if (token !== liveToken.current) return
-      const pa = j.partial
-      if (pa) {
-        setLive(pa)
-        if (pa.video !== shown) { shown = pa.video; setPreviewSrc(pa.video) }
-      }
-      if (j.status !== 'running' && j.status !== 'queued') {
-        if (j.status === 'failed') toast(`预览没生成好：${j.error}`, 'error')
-        if (j.status === 'done' && j.result?.failed?.length) toast(`${j.result.failed.length} 个镜头的贴纸 / 手绘没放上去（画面里没找到合适的位置）`)
-        liveJob.current = null
-        return
-      }
-      await new Promise((r) => setTimeout(r, 400))
-    }
-  }, [toast])
-
+  // ---------------------------------------------------------------- live preview (先快后全, useLivePreview)
   const loadPlan = useCallback((p) => {
     setPlan(p)
     setExported(null)
@@ -168,17 +76,8 @@ export default function App() {
   }, [plan?.plan])
 
   // ---------------------------------------------------------------- history
-  const snapshot = () => ({ plan, analysis })
-  const commit = (r, notes = r.notes) => {
-    setPast((h) => [...h.slice(-49), snapshot()])
-    setFuture([])
-    if (selected != null && selected >= r.shots.length) setSelected(null)
-    loadPlan(r)
-    if (notes?.length) toast(notes.join('；'))
-  }
-  const restore = (s) => { setAnalysis(s.analysis); loadPlan(s.plan) }
-  const undo = () => { if (!past.length || busy) return; setFuture((f) => [snapshot(), ...f]); restore(past[past.length - 1]); setPast((h) => h.slice(0, -1)) }
-  const redo = () => { if (!future.length || busy) return; setPast((h) => [...h, snapshot()]); restore(future[0]); setFuture((f) => f.slice(1)) }
+  const { past, future, setPast, setFuture, snapshot, commit, undo, redo } =
+    useHistory({ plan, analysis, selected, busy, setSelected, setAnalysis, loadPlan, toast })
 
   // ---------------------------------------------------------------- new project
   const pickFolder = async () => { const p = await vc.pickFolder('选择视频素材文件夹'); if (p) setForm((f) => ({ ...f, clips: p })) }
@@ -452,54 +351,9 @@ export default function App() {
   }
   const fromLibrary = () => setLibTab({ tab: 'clips', n: Date.now() })
   // ---------------------------------------------------------------- 素材 after the edit was made (as in 剪映)
-  const [musicSel, setMusicSel] = useState(false)       // the music clip is selected (Delete removes it)
-  useEffect(() => { if (selected != null || ovSel) setMusicSel(false) }, [selected, ovSel])
-  const importMedia = guard(async (files) => {
-    if (!files) files = await vc.pickMedia()
-    if (!files?.length) return
-    const before = snapshot()
-    const a = await runJob({ kind: 'import', analysis: analysis.analysis, files })
-    setPast((h) => [...h.slice(-49), before]); setFuture([])
-    setAnalysis(a)
-    if (a.songs?.length) setSongs((s) => [...new Set([...s, ...a.songs])])
-    const added = a.clips.length - analysis.clips.length
-    toast([added ? `导入了 ${added} 个素材：拖到主轨插入，拖到主轨上方成为画中画` : '', a.songs?.length ? `${a.songs.length} 首音乐在「音乐」里` : '', ...(a.notes || [])].filter(Boolean).join('；'))
-    if (added) setLibTab({ tab: 'clips', n: Date.now() })
-  })
-  const insertClip = guard(async (path, t) => {
-    commit(await runJob({ kind: 'insert', analysis: analysis.analysis, plan: plan.plan, t, clip: path }))
-  })
-  const deleteShot = guard(async (i) => {
-    if (plan.shots.length < 2) { toast('主轨至少要留一段'); return }
-    setSelected(null)
-    commit(await runJob({ kind: 'delete', analysis: analysis.analysis, plan: plan.plan, index: i }))
-  })
-  const deleteMusic = guard(async () => {
-    setMusicSel(false)
-    commit(await runJob({ kind: 'delete', analysis: analysis.analysis, plan: plan.plan, music: true }))
-    toast('音乐已删除。想换一首：把「音乐」里的歌拖到音乐轨道上')
-  })
-  // a song dropped on the music track: the edit stays exactly as it is, only the music changes (as in 剪映)
-  const swapMusic = guard(async (music) => {
-    const before = snapshot()
-    const a = await runJob({ kind: 'music', analysis: analysis.analysis, music, duration: Number(form.duration) })
-    const p = await runJob({ kind: 'swap_music', analysis: a.analysis, plan: plan.plan })
-    setPast((h) => [...h.slice(-49), before]); setFuture([])
-    setAnalysis(a)
-    setForm((f) => ({ ...f, music }))
-    loadPlan(p)
-    toast(`音乐换成了 ${a.music.name}（${Math.round(a.music.tempo)} BPM），剪辑没有动`)
-  })
-  const removeClip = guard(async (path) => {
-    const used = plan.shots.some((s) => s.clip_path === path) || overlays.some((o) => o.clip === path)
-    if (used && !window.confirm('素材已被使用，同时删除时间线上的片段？')) return
-    const before = snapshot()
-    const r = await runJob({ kind: 'remove_clip', analysis: analysis.analysis, plan: plan.plan, clip: path, timeline: used })
-    setPast((h) => [...h.slice(-49), before]); setFuture([])
-    setAnalysis(r.analysis)
-    setSelected(null); setOvSel(null)
-    loadPlan(r.plan)
-  })
+  const { musicSel, setMusicSel, importMedia, insertClip, deleteShot, deleteMusic, swapMusic, removeClip } =
+    useMediaEdits({ guard, runJob, toast, commit, snapshot, setPast, setFuture, loadPlan, analysis, setAnalysis,
+                    plan, overlays, form, setForm, setSongs, setLibTab, selected, setSelected, ovSel, setOvSel })
   // 复制 / 粘贴, as in 剪映: copy a piece of the main track (or a 画中画), paste it onto a 画中画 track at the playhead
   const [clipboard, setClipboard] = useState(null)
   const copyItem = ({ ov, shot: si }) => {
@@ -638,32 +492,7 @@ export default function App() {
   })()
 
   // ---- metronome: a click on every beat while playing (downbeats higher)
-  const audio = useRef(null)
-  useEffect(() => {
-    if (!playing || !metronome || !wave?.grid?.t?.length) return
-    const ctx = audio.current || (audio.current = new AudioContext())
-    let prev = videoRef.current?.currentTime ?? 0
-    let id
-    const loop = () => {
-      const now = videoRef.current?.currentTime ?? prev
-      if (now > prev) {
-        wave.grid.t.forEach((b, i) => {
-          if (b > prev && b <= now && wave.grid.on_beat?.[i]) {
-            const o = ctx.createOscillator(), g = ctx.createGain()
-            o.frequency.value = wave.grid.downbeat?.[i] ? 1760 : 1100
-            g.gain.setValueAtTime(0.35, ctx.currentTime)
-            g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05)
-            o.connect(g).connect(ctx.destination)
-            o.start(); o.stop(ctx.currentTime + 0.06)
-          }
-        })
-      }
-      prev = now
-      id = requestAnimationFrame(loop)
-    }
-    id = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(id)
-  }, [playing, metronome, wave])
+  useMetronome(playing, metronome, wave, videoRef)
 
   const curSize = (() => {
     if (!myDraft || selected == null) return null
@@ -734,17 +563,7 @@ export default function App() {
   }
   const styleName = (id) => looks.drawn_styles.find((d) => d.id === (id || 'lineart'))?.name || '线稿上色'
   const progress = progressOf(busy ? job : null)
-  const toastsEl = (
-    <div className="toasts">
-      {toasts.map((t) => (
-        <div key={t.id} className={`toast ${t.kind}`}>
-          <Icon name={t.kind === 'error' ? 'alert' : 'check'} size={18} /><span>{t.text}</span>
-          {t.action && <button onClick={() => { t.action.run(); setToasts((x) => x.filter((y) => y.id !== t.id)) }}>{t.action.label}</button>}
-          <button className="icon" onClick={() => setToasts((x) => x.filter((y) => y.id !== t.id))} aria-label="关闭"><Icon name="close" size={14} /></button>
-        </div>
-      ))}
-    </div>
-  )
+  const toastsEl = <Toasts toasts={toasts} setToasts={setToasts} />
 
   if (!backend.ready || view === 'new' || !plan) {
     return (
