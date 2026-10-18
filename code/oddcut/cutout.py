@@ -6,6 +6,8 @@ What to cut out (overlay.mask = {"shape": "cutout", "target": ..., "brush": [...
     {"kind": "region", "parts": [...]}     regions of the picture (growth.plan_layers), any of
                                            things (things standing low in front), ground, mid, far, sky;
                                            several together make one cumulative piece ("ground and what is on it")
+        band: true                         ...as one solid band up from the bottom of the picture to their top
+                                           edge (loose crumbs, gaps and holes below it are filled in)
 brush: [{"op": "add" | "sub", "r": radius (share of the box's short side), "pts": [[x, y], ...]}]
     strokes painted on top, in box coordinates (they stay put; the cut itself follows the picture).
 
@@ -71,6 +73,29 @@ def _clean(m: np.ndarray) -> np.ndarray:
     return growth._fill_holes(keep)
 
 
+def _band(m: np.ndarray) -> np.ndarray:
+    """Everything below the top edge of `m`, column by column: one solid piece standing on the bottom of the
+    picture. Crumbs don't count, and the edge is smoothed so poles and gaps make no spikes."""
+    h, w = m.shape
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8))
+    keep = np.zeros_like(m, bool)
+    for i in range(1, n):
+        if st[i, cv2.CC_STAT_AREA] >= 0.01 * m.size:
+            keep |= lab == i
+    if not keep.any():
+        return keep
+    has = keep.any(0)
+    top = np.where(has, keep.argmax(0), h).astype(np.float32)
+    xs = np.arange(w)
+    if not has.all():
+        top[~has] = np.interp(xs[~has], xs[has], top[has])
+    k = max(3, int(w * 0.04)) | 1
+    pad = np.pad(top, k // 2, mode="edge")
+    top = np.median(np.lib.stride_tricks.sliding_window_view(pad, k), axis=1).astype(np.float32)
+    top = cv2.GaussianBlur(top.reshape(1, -1), (0, 0), sigmaX=max(1.0, w * 0.008)).ravel()
+    return np.arange(h)[:, None] >= top[None, :]
+
+
 def first_mask(info: dict, target: dict, shape) -> np.ndarray:
     h, w = shape
     if target.get("kind") == "object":
@@ -84,7 +109,7 @@ def first_mask(info: dict, target: dict, shape) -> np.ndarray:
     for p in target.get("parts") or []:
         if p in info["regions"]:
             m |= info["regions"][p]
-    return m
+    return _band(m) if target.get("band") else m
 
 
 def _brush(m: np.ndarray, strokes: list[dict]) -> np.ndarray:

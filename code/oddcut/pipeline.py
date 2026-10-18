@@ -429,15 +429,57 @@ GROW_STEPS = ["复制下一个镜头的画面，叠在画中画轨道上", "每�
               "每层加两个关键帧：从画面下方升到原位，前快后慢，带动感模糊", "各层按节拍错开（一拍或半拍），最后一层落定时切到下一个镜头"]
 
 
-def _grow_specs(info: dict, n: int) -> list[tuple[list[str], str]]:
-    """What each layer of a 万物生长 shows, in rising order: cumulative regions (each holds everything below its
-    top edge, the way the tutorials cut "the lower part"), the last one the whole picture."""
-    area = {k: float(v.mean()) for k, v in info["regions"].items()}
-    order = [p for p in ("things", "ground", "mid", "far") if area.get(p, 0) >= 0.03]
-    if area.get("sky", 0) < 0.03 and len(order) > 1:
-        order = order[:-1]                        # no sky: the whole picture is the last piece anyway
+def _grow_subject(info: dict, rgb: np.ndarray | None = None) -> dict | None:
+    """The one whole thing a 万物生长 can open with (a person, a car, an animal standing in the lower part of the
+    picture, whole and in focus - not a passer-by smeared across the lens or cut by the side of the frame), as an
+    抠像 point target - or None."""
+    import cv2
+    from .cutout import _clean, wholeness
+    sharp = None
+    if rgb is not None:
+        sharp = np.abs(cv2.Laplacian(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), cv2.CV_32F))
+    best = None
+    for m in info["things"]:
+        m = _clean(m)
+        a = float(m.mean())
+        if not 0.04 <= a <= 0.45:
+            continue
+        wh = wholeness(m)
+        ys = np.nonzero(m.any(1))[0]
+        if wh["pieces"] != 1 or wh["solidity"] < 0.6 or ys[-1] < 0.55 * m.shape[0]:
+            continue
+        xs = np.nonzero(m.any(0))[0]
+        if xs[0] <= 1 or xs[-1] >= m.shape[1] - 2:        # cut by the side of the frame
+            continue
+        if sharp is not None and sharp[m].mean() < 0.6 * sharp.mean():
+            continue                                       # out of focus / motion-blurred
+        if best is None or a > best[0]:
+            best = (a, m)
+    if best is None:
+        return None
+    d = cv2.distanceTransform(best[1].astype(np.uint8), cv2.DIST_L2, 5)
+    y, x = np.unravel_index(int(np.argmax(d)), d.shape)      # well inside it, so the click lands on it
+    return {"kind": "object", "x": round(x / d.shape[1], 4), "y": round(y / d.shape[0], 4)}
+
+
+def _grow_specs(info: dict, n: int, rgb: np.ndarray | None = None) -> list[tuple[dict, str]]:
+    """What each layer of a 万物生长 shows (an 抠像 target and a name), in rising order, as in the reference
+    videos: the one whole subject if there is one, then solid bands up from the bottom of the picture - the
+    ground with the loose things on it, then up to the middle / far part (each band holds everything below its
+    top edge) - and last the whole picture, sky and all."""
     from .cutout import PART_NAMES
-    steps = [(order[:j + 1], ("" if j == 0 else "加上") + PART_NAMES[order[j]]) for j in range(len(order))]
+    area = {k: float(v.mean()) for k, v in info["regions"].items()}
+    bands = [p for p in ("ground", "mid", "far") if area.get(p, 0) >= 0.03]
+    if area.get("sky", 0) < 0.03 and len(bands) > 1:
+        bands = bands[:-1]                        # no sky: the whole picture is the last piece anyway
+    steps: list[tuple[dict, str]] = []
+    subj = _grow_subject(info, rgb)
+    if subj is not None:
+        steps.append((subj, "主体"))
+    cum = ["things"]                              # small loose things go with the ground they stand on
+    for p in bands:
+        cum = cum + [p]
+        steps.append(({"kind": "region", "parts": list(cum), "band": True}, ("加上" if steps else "") + PART_NAMES[p]))
     want = n - 1
     if len(steps) > want:                         # the front piece, then evenly up to the last
         idx = [0] + [round(j * (len(steps) - 1) / max(1, want - 1)) for j in range(1, want)] if want > 1 else [0]
@@ -461,18 +503,22 @@ def grow_preset(analysis: Analysis, p: Plan, index: int, layers: int = 3, stagge
     w, h = output_size(p.template)
     frame0 = _frames(s.clip.path, s.src_start, 1, fps, w / h)[0]
     info = analyse(frame0)
-    specs = _grow_specs(info, max(2, min(4, layers)))
+    specs = _grow_specs(info, max(2, min(4, layers)), frame0)
     if len(specs) < 2:
         raise ValueError("这个镜头分不出层次，做不了万物生长")
     beat = float(p.music.beat_period)
-    step = beat if stagger == "beat" else beat / 2
-    rise = min(0.45, max(0.28, 0.9 * step))
+    # as in the references: each layer rises for 0.3-0.5 s, the whole growth takes 2-3 beats (1-1.6 s)
+    rise = min(0.5, max(0.3, 0.9 * beat))
+    span = min(1.6, max(1.0, 2.5 * beat))
+    step = max(0.2, min(beat, (span - rise) / max(1, len(specs) - 1)))
+    if stagger != "beat":
+        step = max(0.15, min(step, beat / 2))
     n = len(specs)
     t_cut = s.t_start
     room = (s.t_end - s.t_start) - MIN_SHOT - 0.05     # the shot must keep its minimum length after the moved cut
     notes = []
     want = (n - 1) * step + rise
-    if want > room and not strict and index + 1 < len(p.shots):
+    if want > room and index + 1 < len(p.shots):
         # one click should just work: make the shot longer - its end goes to the next beat with room (the
         # next shot gives up the time); only the timing changes, so it's undone like any cut move
         need = t_cut + want + MIN_SHOT + 0.05
@@ -487,12 +533,13 @@ def grow_preset(analysis: Analysis, p: Plan, index: int, layers: int = 3, stagge
         except ValueError:
             pass
     if (n - 1) * step + rise > room:
-        step = max(0.12, (room - rise) / max(1, n - 1))
+        rise = max(0.3, min(rise, room - 0.15 * (n - 1)))
+        step = max(0.15, (room - rise) / max(1, n - 1))
     land = (n - 1) * step + rise
     if land > room:
         raise ValueError("这个镜头太短，放不下万物生长")
-    for k, (parts, label) in enumerate(specs[:-1]):
-        wh = wholeness(_clean(first_mask(info, {"kind": "region", "parts": parts}, frame0.shape[:2])))
+    for k, (target, label) in enumerate(specs[:-1]):
+        wh = wholeness(_clean(first_mask(info, target, frame0.shape[:2])))
         if wh["area"] < 0.02 or wh["pieces"] > 4 or (k == 0 and wh["solidity"] < 0.35):
             if strict:
                 raise ValueError(f"「{label}」抠出来不完整")
@@ -505,14 +552,14 @@ def grow_preset(analysis: Analysis, p: Plan, index: int, layers: int = 3, stagge
         raise ValueError("这里的画中画轨道不够用了，先挪开一些画中画")
     gid = f"grow{int(time.time() * 1000) % 10**9}"
     new = []
-    for k, (parts, label) in enumerate(specs):
+    for k, (target, label) in enumerate(specs):
         t0 = t_cut + k * step
         o = {"id": f"{gid}_{k + 1}", "track": base + (n - 1 - k), "clip": s.clip.path, "src_start": s.src_start + k * step,
              "t_start": t0, "t_end": t_cut + land + 1.0 / fps, "x": 0, "y": 0, "w": 1, "h": 1, "opacity": 1, "radius": 0,
              "mblur": 1.0, "keys": [{"t": 0, "x": 0.5, "y": 1.5, "s": 1, "r": 0, "e": "out"}, {"t": round(rise, 3), "x": 0.5, "y": 0.5, "s": 1, "r": 0}],
              "group": {"id": gid, "kind": "grow", "layer": k + 1, "of": n, "label": label}}
-        if parts:
-            o["mask"] = {"shape": "cutout", "target": {"kind": "region", "parts": parts}, "feather": 0.004}
+        if target:
+            o["mask"] = {"shape": "cutout", "target": target, "feather": 0.004}
         new.append(o)
     q, more = move_cut(analysis, p, index, t_cut + land, snap=False)
     if abs(q.shots[index].t_start - (t_cut + land)) > 1.5 / fps:
@@ -953,6 +1000,8 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
             else:
                 from .cutout import PARTS
                 target = {"kind": "region", "parts": [p_ for p_ in (tg.get("parts") or []) if p_ in PARTS] or ["things"]}
+                if tg.get("band"):
+                    target["band"] = True
             brush = [{"op": "sub" if b.get("op") == "sub" else "add", "r": round(num(b.get("r"), 0.005, 0.3, 0.04), 4),
                       "pts": [[round(num(q[0], 0, 1, 0), 4), round(num(q[1], 0, 1, 0), 4)] for q in (b.get("pts") or [])[:400]]}
                      for b in (m.get("brush") or [])[:60]]

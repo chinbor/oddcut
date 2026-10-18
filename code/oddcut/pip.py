@@ -428,10 +428,12 @@ def _place(base: np.ndarray, layer: _Layer, local: float, beat: float):
         nx, ny, _, _ = key_pose(o, local + 1.0 / 30)
         ddx, ddy = (nx - cx) * W, (ny - cy) * H
         k = int(min(0.06 * H, 0.5 * mb * max(abs(ddx), abs(ddy))))
-        if k >= 3:
-            ks = (1, k | 1) if abs(ddy) >= abs(ddx) else (k | 1, 1)
-            img = cv2.blur(img, ks)
-            a_w = cv2.blur(a_w, ks)
+        if k >= 3:                               # a soft (gaussian) trail, not a box: no hard-edged ghost copies
+            kk, sg = (2 * k) | 1, k / 2.5
+            ks = (1, kk) if abs(ddy) >= abs(ddx) else (kk, 1)
+            sx, sy = (0.1, sg) if abs(ddy) >= abs(ddx) else (sg, 0.1)
+            img = cv2.GaussianBlur(img, ks, sigmaX=sx, sigmaY=sy)
+            a_w = cv2.GaussianBlur(a_w, ks, sigmaX=sx, sigmaY=sy)
             inv = 1.0 - a_w
     roi = base[y0:y1, x0:x1]
     mode = o.get("blend", "normal")
