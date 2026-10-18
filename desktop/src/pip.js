@@ -24,7 +24,7 @@ const easeBy = (kind, u) => {
 // centre (0..1 of the frame), scale (1 = the box) and rotation (degrees) at `local` s into the overlay
 export function keyPose(o, local) {
   const keys = o.keys || []
-  if (!keys.length) return { x: o.x + o.w / 2, y: o.y + o.h / 2, s: 1, r: o.rot || 0 }
+  if (!keys.length) return { x: o.x + o.w / 2, y: o.y + o.h / 2, s: o.sc ?? 1, r: o.rot || 0, a: 1 }
   if (local <= keys[0].t) return { ...keys[0] }
   for (let i = 0; i + 1 < keys.length; i++) {
     const a = keys[i], b = keys[i + 1]
@@ -37,12 +37,24 @@ export function keyPose(o, local) {
 }
 
 // a keyframe at `local` with `patch` applied (made from the current pose if there is none there yet)
+// keyframed opacity (1 without keyframes), between keyframes as the position moves
+export function keyAlpha(o, local) {
+  const keys = o.keys || []
+  if (!keys.length) return 1
+  if (local <= keys[0].t) return keys[0].a ?? 1
+  for (let i = 0; i + 1 < keys.length; i++) {
+    const a = keys[i], b = keys[i + 1]
+    if (local <= b.t) return (a.a ?? 1) + ((b.a ?? 1) - (a.a ?? 1)) * easeBy(a.e || 'smooth', (local - a.t) / Math.max(1e-6, b.t - a.t))
+  }
+  return keys[keys.length - 1].a ?? 1
+}
+
 export function withKey(o, local, patch, fps = 30) {
   const keys = [...(o.keys || [])]
   let j = keys.findIndex((k) => Math.abs(k.t - local) < 0.5 / fps)
   if (j < 0) {
     const p = keyPose(o, local)
-    keys.push({ t: Math.round(local * fps) / fps, x: p.x, y: p.y, s: p.s, r: p.r })
+    keys.push({ t: Math.round(local * fps) / fps, x: p.x, y: p.y, s: p.s, r: p.r, a: keyAlpha(o, local), e: 'out' })
     keys.sort((a, b) => a.t - b.t)
     j = keys.findIndex((k) => Math.abs(k.t - local) < 0.5 / fps)
   }

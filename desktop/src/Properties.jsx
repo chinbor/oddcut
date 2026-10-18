@@ -7,48 +7,6 @@ const MODES = [
   ['still', '停在原地', '贴纸一直停在一个位置，不动。'],
 ]
 
-// 手绘: pick a style, then click the object on the preview (or let it pick the biggest whole one)
-function DrawStart({ looks, busy, drawPick, onDrawPick, onDrawAuto }) {
-  const [style, setStyle] = useState('lineart')
-  return (
-    <>
-      <div className="style-chips">
-        {looks.drawn_styles.map((d) => <button key={d.id} className={style === d.id ? 'on' : ''} onClick={() => setStyle(d.id)}>{d.name}</button>)}
-      </div>
-      <div className="row-btns">
-        <button className={drawPick ? 'primary' : ''} disabled={busy} onClick={() => onDrawPick(drawPick ? null : style)}>
-          {drawPick ? '在预览上点要画的物体…（Esc 取消）' : '点选物体做手绘'}</button>
-        <button disabled={busy || !!drawPick} onClick={() => onDrawAuto(style)}>自动选物体</button>
-      </div>
-      <p className="caption">会抠出这个物体，放到画中画轨道上做成手绘层：先画线稿、上色，在重拍上变回实拍。「绘制进度」是关键帧，可以拖。</p>
-    </>
-  )
-}
-
-// 万物生长 on this cut: how many layers and how fast, then build it
-function GrowStart({ busy, onApply }) {
-  const [layers, setLayers] = useState(3)
-  const [stagger, setStagger] = useState('beat')
-  return (
-    <>
-      <div className="field">
-        <span className="field-label">万物生长 · 分几层</span>
-        <div className="segmented">
-          {[3, 4].map((n) => <button key={n} className={layers === n ? 'on' : ''} onClick={() => setLayers(n)}>{n} 层</button>)}
-        </div>
-      </div>
-      <div className="field">
-        <span className="field-label">节奏</span>
-        <div className="segmented">
-          {[['beat', '一拍一层'], ['half', '半拍一层']].map(([id, l]) => <button key={id} className={stagger === id ? 'on' : ''} onClick={() => setStagger(id)}>{l}</button>)}
-        </div>
-      </div>
-      <button className="primary" disabled={busy} onClick={() => onApply(layers, stagger)}>在这个镜头开头做万物生长</button>
-      <p className="caption">会在画中画轨道上建好几层：同一段画面抠出前景物体、地面、中景，各加从下往上的关键帧，按节拍错开。</p>
-    </>
-  )
-}
-
 // Right panel, only while a shot is selected. Every change applies right away (one undo step each).
 export default function Properties({ shot, index, thumb, looks, usableClips, draft, check, busy, onClose, onSwap,
                                      onRemoveSticker, onMode, onSize, onSizeCommit, onDrawn, onStyle, onForceDrawn,
@@ -56,6 +14,7 @@ export default function Properties({ shot, index, thumb, looks, usableClips, dra
                                      onRecordArm, onMoveShot, shotCount, preset, onApplyPreset, onRemovePreset, onSelectLayer,
                                      drawPick, onDrawPick, onDrawAuto, drawnLayers = [], onSelectLayer2, onDeleteLayer }) {
   const [pickClip, setPickClip] = useState(false)
+  const [more, setMore] = useState(false)
   const len = shot.t_end - shot.t_start
   const sid = shot.sticker ? shot.sticker.split('@')[0] : null
   const manual = !!shot.sticker_at
@@ -64,8 +23,6 @@ export default function Properties({ shot, index, thumb, looks, usableClips, dra
   const curSize = draft?.curSize ?? 0.22
   const mode = draft?.mode === 'fixed' ? 'path' : draft?.mode || 'follow'
 
-  const drawnOn = !!shot.drawn
-  const style = shot.drawn?.style || 'lineart'
 
   return (
     <aside className="props">
@@ -108,76 +65,69 @@ export default function Properties({ shot, index, thumb, looks, usableClips, dra
             </div>
             {manual ? (
               <>
-                <div className="field">
-                  <span className="field-label">怎么动</span>
-                  <div className="segmented three">
-                    {MODES.map(([id, label]) => (
-                      <button key={id} className={mode === id ? 'on' : ''} disabled={busy} onClick={() => onMode(id)}>{label}</button>
-                    ))}
-                  </div>
-                  <p className="caption">{MODES.find(([id]) => id === mode)[2]}</p>
-                </div>
-                {mode !== 'still' && (
-                  <div className="field">
-                    <span className="field-label">关键帧</span>
-                    <div className="keybar">
-                      <button className="icon" disabled={busy || keyAt.prev == null} onClick={onPrevKey} title="上一个关键帧"><Icon name="prev" size={18} /></button>
-                      <button className={`kbtn ${keyAt.here != null ? 'on' : ''}`} disabled={busy} onClick={onToggleKey}
-                              title={keyAt.here != null ? '删除播放头这里的关键帧' : '在播放头这里加一个关键帧'}><i /></button>
-                      <button className="icon" disabled={busy || keyAt.next == null} onClick={onNextKey} title="下一个关键帧"><Icon name="next" size={18} /></button>
-                      <span className="keybar-text">{keyAt.here != null ? `第 ${keyAt.here + 1} 个关键帧，共 ${keys.length} 个` : `播放头不在关键帧上（共 ${keys.length} 个）`}</span>
-                    </div>
-                    <button className={`record ${recordArmed ? 'on' : ''}`} disabled={busy} onClick={onRecordArm}
-                            title="按下后在画面上按住贴纸拖动：视频慢速播放，你拖的路线会变成关键帧">
-                      <i className="rec-dot" />{recordArmed ? '在画面上按住贴纸拖动…（再点取消）' : '边播边拖，录一条路线'}
-                    </button>
-                  </div>
-                )}
                 <label className="slider-row">
                   <span>大小</span>
                   <input type="range" min="0.06" max="0.6" step="0.01" value={curSize} disabled={busy}
                          onChange={(e) => onSize(Number(e.target.value))} onPointerUp={onSizeCommit} onKeyUp={onSizeCommit} />
                   <b>{Math.round(curSize * 100)}%</b>
                 </label>
-                <p className="caption">{mode === 'still' ? '' : '大小也跟着关键帧变，中间平滑过渡。'}</p>
+                <button className={`more-toggle inline ${more ? 'open' : ''}`} onClick={() => setMore((m) => !m)}>更多<Icon name="chevronDown" size={16} /></button>
+                {more && (
+                  <div className="more-body">
+                    <div className="field">
+                      <span className="field-label">怎么动</span>
+                      <div className="segmented three">
+                        {MODES.map(([id, label]) => (
+                          <button key={id} className={mode === id ? 'on' : ''} disabled={busy} onClick={() => onMode(id)}>{label}</button>
+                        ))}
+                      </div>
+                      <p className="caption">{MODES.find(([id]) => id === mode)[2]}</p>
+                    </div>
+                    {mode !== 'still' && (
+                      <div className="field">
+                        <span className="field-label">关键帧</span>
+                        <div className="keybar">
+                          <button className="icon" disabled={busy || keyAt.prev == null} onClick={onPrevKey} title="上一个关键帧"><Icon name="prev" size={18} /></button>
+                          <button className={`kbtn ${keyAt.here != null ? 'on' : ''}`} disabled={busy} onClick={onToggleKey}
+                                  title={keyAt.here != null ? '删除播放头这里的关键帧' : '在播放头这里加一个关键帧'}><i /></button>
+                          <button className="icon" disabled={busy || keyAt.next == null} onClick={onNextKey} title="下一个关键帧"><Icon name="next" size={18} /></button>
+                          <span className="keybar-text">{keyAt.here != null ? `第 ${keyAt.here + 1} 个，共 ${keys.length} 个` : `共 ${keys.length} 个关键帧`}</span>
+                        </div>
+                        <button className={`record ${recordArmed ? 'on' : ''}`} disabled={busy} onClick={onRecordArm}
+                                title="按下后在画面上按住贴纸拖动：视频慢速播放，你拖的路线会变成关键帧">
+                          <i className="rec-dot" />{recordArmed ? '在画面上按住贴纸拖动…（再点取消）' : '边播边拖，录一条路线'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             ) : (
               <p className="caption">自动加的贴纸会跟着画面里的东西走。点预览画面上的位置，可以改成手动放在那里。</p>
             )}
           </>
         ) : (
-          <p className="empty">还没有贴纸。从左边贴纸库拖一个到画面上，或点一下加到这个镜头。</p>
+          <p className="caption">从左边贴纸库拖一个到画面上</p>
         )}
       </section>
 
-      <section>
-        <h3>转场</h3>
-        {preset ? (
-          <>
-            <p className="caption grow-why">这个镜头开头有万物生长（{preset.layers} 层，{preset.source === 'auto' ? `自动选的：${preset.why || '画面合适'}` : '你加的'}）。
-              它就是画中画轨道上的 {preset.layers} 层：每层一个抠像 + 两个关键帧，点开可以单独改。</p>
-            <div className="row-btns">
-              <button disabled={busy} onClick={() => onSelectLayer(preset.id)}>查看各层</button>
-              <button className="danger" disabled={busy} onClick={() => onRemovePreset(preset.id)}><Icon name="trash" size={16} />去掉</button>
+      {(preset || drawnLayers.length > 0) && (
+        <section>
+          <h3>这个镜头的效果</h3>
+          {preset && (
+            <div className="chip-row">
+              <button className="chip fx-chip" onClick={() => onSelectLayer(preset.id)}>万物生长 · {preset.layers} 层<small>{preset.source === 'auto' ? '自动加的' : '你加的'}</small></button>
+              <button className="icon" disabled={busy} onClick={() => onRemovePreset(preset.id)} title="去掉万物生长"><Icon name="trash" size={18} /></button>
             </div>
-          </>
-        ) : index === 0 ? (
-          <p className="caption">开场镜头没有上一个镜头，不能做万物生长。</p>
-        ) : (
-          <GrowStart busy={busy} onApply={onApplyPreset} />
-        )}
-      </section>
-
-      <section>
-        <h3>手绘</h3>
-        <DrawStart looks={looks} busy={busy} drawPick={drawPick} onDrawPick={onDrawPick} onDrawAuto={onDrawAuto} />
-        {drawnLayers.map((o) => (
-          <div key={o.id} className="chip-row">
-            <button className="chip drawn-chip" onClick={() => onSelectLayer2(o.id)}>手绘层 · {o.group?.label || '手绘'}<small>改绘制进度、风格</small></button>
-            <button className="icon" disabled={busy} onClick={() => onDeleteLayer(o.id)} title="删掉这个手绘层"><Icon name="trash" size={18} /></button>
-          </div>
-        ))}
-      </section>
+          )}
+          {drawnLayers.map((o) => (
+            <div key={o.id} className="chip-row">
+              <button className="chip drawn-chip" onClick={() => onSelectLayer2(o.id)}>手绘 · {o.group?.label || '手绘'}</button>
+              <button className="icon" disabled={busy} onClick={() => onDeleteLayer(o.id)} title="删掉这个手绘"><Icon name="trash" size={18} /></button>
+            </div>
+          ))}
+        </section>
+      )}
     </aside>
   )
 }

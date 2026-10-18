@@ -470,12 +470,27 @@ def grow_preset(analysis: Analysis, p: Plan, index: int, layers: int = 3, stagge
     n = len(specs)
     t_cut = s.t_start
     room = (s.t_end - s.t_start) - MIN_SHOT - 0.05     # the shot must keep its minimum length after the moved cut
+    notes = []
+    want = (n - 1) * step + rise
+    if want > room and not strict and index + 1 < len(p.shots):
+        # one click should just work: make the shot longer - its end goes to the next beat with room (the
+        # next shot gives up the time); only the timing changes, so it's undone like any cut move
+        need = t_cut + want + MIN_SHOT + 0.05
+        grid = analysis.music.grid
+        later = grid[grid >= need - 1e-6]
+        try:
+            q, _ = move_cut(analysis, p, index + 1, float(later[0]) if len(later) else need, snap=False)
+            if q.shots[index].t_end > s.t_end + 1e-3:
+                notes.append(f"万物生长需要时间，这个镜头从 {s.t_end - s.t_start:.1f} 秒拉长到 {q.shots[index].t_end - t_cut:.1f} 秒")
+                p, s = q, q.shots[index]
+                room = (s.t_end - s.t_start) - MIN_SHOT - 0.05
+        except ValueError:
+            pass
     if (n - 1) * step + rise > room:
         step = max(0.12, (room - rise) / max(1, n - 1))
     land = (n - 1) * step + rise
     if land > room:
         raise ValueError("这个镜头太短，放不下万物生长")
-    notes = []
     for k, (parts, label) in enumerate(specs[:-1]):
         wh = wholeness(_clean(first_mask(info, {"kind": "region", "parts": parts}, frame0.shape[:2])))
         if wh["area"] < 0.02 or wh["pieces"] > 4 or (k == 0 and wh["solidity"] < 0.35):
@@ -782,6 +797,34 @@ def move_cut(analysis: Analysis, p: Plan, k: int, t: float, snap: bool = True) -
     return replace(p, shots=shots, looks={**p.looks, "edited_cuts": True}), []
 
 
+def split_shot(analysis: Analysis, p: Plan, index: int, t: float) -> tuple[Plan, list[str]]:
+    """分割: shot `index` becomes two at timeline time `t` (to the frame): the same footage carries on across
+    the new cut. A placed sticker's keyframes go to the half they fall in; a drawing / 万物生长 stays with the
+    first half."""
+    if not 0 <= index < len(p.shots):
+        raise IndexError(f"shot {index} out of range")
+    fps = float(p.template["output"]["fps"])
+    s = p.shots[index]
+    t = round(t * fps) / fps
+    if t - s.t_start < MIN_SHOT - 1e-6 or s.t_end - t < MIN_SHOT - 1e-6:
+        raise ValueError("分割点离片段两头太近了（每段至少 0.4 秒）")
+    d = t - s.t_start
+    a = replace(s, t_end=t, frames=_frames_between(s.t_start, t, fps))
+    b = replace(s, t_start=t, src_start=s.src_start + d, frames=_frames_between(t, s.t_end, fps), drawn=None, grow=None,
+                role="body" if s.role in ("hook", "drawn") else s.role)
+    if s.sticker_at:
+        keys_a = [k for k in s.sticker_at["keys"] if k["t"] < d]
+        keys_b = [{**k, "t": round(k["t"] - d, 4)} for k in s.sticker_at["keys"] if k["t"] >= d]
+        a = replace(a, sticker_at={**s.sticker_at, "keys": keys_a} if keys_a else None, sticker=s.sticker if keys_a else None)
+        b = replace(b, sticker_at=_shift_keys({**s.sticker_at, "keys": keys_b}, 0) if keys_b else None, sticker=s.sticker if keys_b else None)
+        if b.sticker_at:
+            b.sticker_at["in"] = max(0.0, float(s.sticker_at.get("in") or 0) - d)
+    if s.drawn and s.drawn["reveal_at"] + _drawn_cfg(p.template, index)[0] > d:
+        a = replace(a, drawn=None, role="hook" if index == 0 else "body")
+    shots = list(p.shots[:index]) + [a, b] + list(p.shots[index + 1:])
+    return replace(p, shots=shots, looks={**p.looks, "edited_cuts": True}), []
+
+
 def move_shot(analysis: Analysis, p: Plan, src: int, dst: int) -> tuple[Plan, list[str]]:
     """Move shot `src` to position `dst` (as in a timeline drag). Every shot keeps its footage (clip and start
     in it), its sticker and drawing; the shots are laid end to end in the new order and each cut then goes to
@@ -895,6 +938,7 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
                 "clip": c.path, "name": c.name, "src_start": round(src, 3), "t_start": round(t0, 3), "t_end": round(t1, 3),
                 "x": round(num(o.get("x"), 0.02 - w, 0.98, 0.0), 4), "y": round(num(o.get("y"), 0.02 - h, 0.98, 0.0), 4),
                 "w": round(w, 4), "h": round(h, 4), "rot": round(num(o.get("rot"), -360, 360, 0.0), 2),
+                "sc": round(num(o.get("sc"), 0.05, 5, 1.0), 4),
                 "opacity": round(num(o.get("opacity"), 0.05, 1, 1.0), 3),
                 "radius": round(num(o.get("radius"), 0, 0.5, 0.0), 3), "border": bool(o.get("border")),
                 "blend": o.get("blend") if o.get("blend") in BLENDS else "normal"}
@@ -929,7 +973,7 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
         for k_ in o.get("keys") or []:
             key = {"t": round(num(k_.get("t"), 0, t1 - t0, 0), 3), "x": round(num(k_.get("x"), -1, 2, 0.5), 4),
                    "y": round(num(k_.get("y"), -1, 2, 0.5), 4), "s": round(num(k_.get("s"), 0.05, 5, 1), 4),
-                   "r": round(num(k_.get("r"), -720, 720, 0), 2)}
+                   "r": round(num(k_.get("r"), -720, 720, 0), 2), "a": round(num(k_.get("a"), 0, 1, 1), 3)}
             if k_.get("e") in EASES and k_.get("e") != "smooth":
                 key["e"] = k_["e"]
             keys.append(key)

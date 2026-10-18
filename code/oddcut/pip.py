@@ -2,12 +2,13 @@
 
 An overlay (plan.looks.overlays[i], checked by pipeline._check_overlays):
     clip, src_start, t_start, t_end, track     what, from where in the clip, when on the edit, which lane
-    x, y, w, h                                 its box (0..1 of the frame, top-left), rot (degrees)
+    x, y, w, h                                 its box (0..1 of the frame, top-left), rot (degrees), sc (scale)
     opacity, blend                             normal | screen | multiply | overlay | lighten | darken | add
     radius, border                             rounded corners (share of the box's short side), white outline
     mask {shape, cx, cy, size, rot, feather, invert}
                                                none | circle | heart | star | rect | linear | mirror, in box space
-    keys [{t, x, y, s, r, e}]                  keyframes (t from the overlay's start): centre, scale, rotation;
+    keys [{t, x, y, s, r, a, e}]               keyframes (t from the overlay's start): centre, scale, rotation,
+                                               opacity (a, 0..1, times the layer's opacity);
                                                e = how it moves on to the next one: smooth | out | in | linear
     mblur                                      motion blur while it moves (0..1.5)
     anim_in / anim_out {type, beats}           pop | slide_l | slide_r | slide_u | slide_d | zoom | fade | spin
@@ -76,12 +77,26 @@ def fx_progress(o: dict, local: float) -> float:
     return float(keys[-1]["v"])
 
 
+def key_alpha(o: dict, local: float) -> float:
+    """Keyframed opacity (1 without keyframes), between keyframes as the position moves."""
+    keys = o.get("keys") or []
+    if not keys:
+        return 1.0
+    if local <= keys[0]["t"]:
+        return float(keys[0].get("a", 1.0))
+    for a, b in zip(keys, keys[1:]):
+        if local <= b["t"]:
+            u = _ease_by(a.get("e", "smooth"), (local - a["t"]) / max(1e-6, b["t"] - a["t"]))
+            return float(a.get("a", 1.0) + (b.get("a", 1.0) - a.get("a", 1.0)) * u)
+    return float(keys[-1].get("a", 1.0))
+
+
 def key_pose(o: dict, local: float) -> tuple[float, float, float, float]:
     """Centre (0..1 of the frame), scale (1 = the box) and rotation (degrees) at `local` s into the overlay.
     Without keyframes: the box, unscaled, at its rotation. Between keyframes: smoothstep."""
     keys = o.get("keys") or []
     if not keys:
-        return o["x"] + o["w"] / 2, o["y"] + o["h"] / 2, 1.0, float(o.get("rot", 0.0))
+        return o["x"] + o["w"] / 2, o["y"] + o["h"] / 2, float(o.get("sc", 1.0)), float(o.get("rot", 0.0))
     if local <= keys[0]["t"]:
         k = keys[0]
         return k["x"], k["y"], k["s"], k["r"]
@@ -383,7 +398,7 @@ def _place(base: np.ndarray, layer: _Layer, local: float, beat: float):
     cx, cy, s, r = key_pose(o, local)
     dx, dy, s2, r2, a2 = anim_pose(o, local, beat)
     s, r = s * s2, r + r2
-    opacity = float(o.get("opacity", 1.0)) * a2
+    opacity = float(o.get("opacity", 1.0)) * a2 * key_alpha(o, local)
     if s <= 0.01 or opacity <= 0.003:
         layer.frame()                           # keep the clip running
         return

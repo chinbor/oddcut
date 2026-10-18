@@ -26,6 +26,11 @@ const P = {
   box: 'M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4',
   sparkle: 'M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z',
   refresh: 'M4 4v6h6M20 20v-6h-6M5 15a7 7 0 0012 3l3-3M19 9a7 7 0 00-12-3L4 9',
+  scissors: 'M6 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12',
+  cutout: 'M3 7V3h4M17 3h4v4M21 17v4h-4M7 21H3v-4M12 11a3 3 0 100-6 3 3 0 000 6zM7 19a5 5 0 0110 0',
+  layers: 'M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5',
+  diamond: 'M12 3l9 9-9 9-9-9z',
+  brush2: 'M18.4 2.6a2 2 0 012.9 2.9L11 15.8 8 16l.2-3zM7 17c-2 0-3 1.5-3 3.5V21h3.5c1.5 0 3-1 3-3',
 }
 
 export default function Icon({ name, size = 20, fill = false, style }) {

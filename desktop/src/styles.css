@@ -138,7 +138,7 @@ button.huge { height: 52px; font-size: 16px; justify-content: center; border-rad
 
 /* ---------------------------------------------------------------- library */
 .library { grid-area: lib; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; position: relative; }
-.lib-tabs { display: grid; grid-template-columns: repeat(5, 1fr); border-bottom: 1px solid var(--line); flex: none; }
+.lib-tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); flex: none; }
 .lib-tabs button { border: none; border-radius: 0; background: transparent; justify-content: center; padding: 12px 4px; color: var(--muted); border-bottom: 2px solid transparent; }
 .lib-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
 .lib-body { padding: 14px; overflow-y: auto; flex: 1; min-height: 0; }
@@ -497,3 +497,36 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .bar.ov.grp:has(.diamond.fx) { background: #b8643a; }
 .drawn-chip { justify-content: flex-start; border-color: var(--drawn); background: #2c2018; }
 .drawn-chip small { margin-left: auto; color: #ffc9a6; }
+
+/* ---------------------------------------------------------------- tool bar (分割 · 抠像 · 画中画 · 特效) */
+.toolbar { flex: none; height: 46px; display: flex; align-items: center; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--panel); position: relative; z-index: 6; }
+.toolbar.empty { color: var(--muted); font-size: 12.5px; }
+.tool { background: transparent; border-color: transparent; padding: 6px 10px; gap: 6px; font-size: 13px; }
+.tool.on { background: #2a1f1b; border-color: var(--accent); color: var(--text); }
+.tool-wrap { position: relative; }
+.tool-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; min-width: 200px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 10px; padding: 6px; box-shadow: 0 12px 32px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 4px; }
+.tool-menu.wide { width: 320px; }
+.tool-menu > button { justify-content: flex-start; border: none; background: transparent; padding: 8px 10px; }
+.tool-menu > button:hover { background: var(--raised-2); }
+.tm-row { display: flex; align-items: center; gap: 8px; padding: 6px; border-radius: 8px; }
+.tm-row.col { flex-direction: column; align-items: stretch; }
+.tm-main { flex: 1; flex-direction: column; align-items: flex-start; gap: 1px; border: none; background: var(--raised-2); text-align: left; }
+.tm-main small, .tm-label small { color: var(--muted); font-size: 11.5px; }
+.tm-label { display: flex; flex-direction: column; }
+.segmented.mini button { padding: 4px 8px; font-size: 12px; }
+.tool-hint { margin-left: 10px; color: #ffd36b; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-sub { margin-left: auto; display: flex; gap: 4px; }
+.tool-sub button { padding: 5px 10px; font-size: 12.5px; }
+.tool-sub button.on { border-color: var(--accent); background: #2a1f1b; }
+.keyctl { display: inline-flex; align-items: center; gap: 2px; margin-left: 10px; }
+.keyctl.off { opacity: .45; }
+.keyctl .mini { width: 26px; height: 32px; padding: 0; justify-content: center; font-size: 20px; line-height: 1; }
+.kbtn.big { width: 38px; height: 38px; }
+.kbtn.big i { width: 14px; height: 14px; }
+.more-toggle { width: 100%; justify-content: center; gap: 6px; border: none; border-top: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--muted); padding: 10px; }
+.more-toggle svg { transition: transform .15s; }
+.more-toggle.open svg { transform: rotate(180deg); }
+.more-toggle.inline { border: 1px dashed var(--line-2); border-radius: 8px; padding: 6px; }
+.more-body { display: flex; flex-direction: column; }
+.fx-chip { justify-content: flex-start; border-color: #4fc79a; background: #18271f; }
+.fx-chip small { margin-left: auto; color: #8fdcbd; }

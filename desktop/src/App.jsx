@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import Icon from './icons.jsx'
 import Library from './Library.jsx'
+import Toolbar from './Toolbar.jsx'
 import NewProject from './NewProject.jsx'
 import Properties from './Properties.jsx'
 import OverlayProps from './OverlayProps.jsx'
-import { LAYOUTS } from './pip.js'
+import { keyPose, LAYOUTS, withKey } from './pip.js'
 import Timeline from './Timeline.jsx'
 import Viewer from './Viewer.jsx'
 
@@ -221,7 +222,8 @@ export default function App() {
     commit(await runJob({ kind: 'grow_preset', analysis: analysis.analysis, plan: plan.plan, remove: gid }))
   })
   const [cutTool, setCutTool] = useState(null)            // 抠像 on the preview: 'pick' | 'add' | 'sub'
-  useEffect(() => { setCutTool(null) }, [ovSel])
+  const cutKeep = useRef(false)                            // a fresh 抠像: stay in the tool so 修整 is one click away
+  useEffect(() => { setCutTool(cutKeep.current ? 'review' : null); cutKeep.current = false }, [ovSel])
   const applyGrow = guard(async (index, cfg) => commit(await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, grow: cfg })))
   const autoGrow = guard(async () => {
     const r = await runJob({ kind: 'grow_auto', analysis: analysis.analysis, plan: plan.plan })
@@ -412,6 +414,76 @@ export default function App() {
   const deleteOverlay = (id) => { setOvSel(null); applyOverlays(overlays.filter((o) => o.id !== id)) }
   const curOv = overlays.find((o) => o.id === ovSel) || null
 
+  // ---------------------------------------------------------------- the tool bar (分割 / 抠像 / 画中画 / 特效) and ◆
+  const [libTab, setLibTab] = useState(null)              // ask the library to show a tab: {tab, n}
+  const fpsT = plan?.fps || 30
+  const shotSel = plan && selected != null ? plan.shots[selected] : null
+  const newId = () => `ov${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`
+  const freeTrack = (t0, t1, list = overlays, skip = null) => [0, 1, 2, 3, 4, 5].find((k) => !list.some((o) => o.id !== skip && o.track === k && o.t_start < t1 - 1e-3 && t0 < o.t_end - 1e-3))
+  const shotAsOverlay = (i, extra = {}) => {
+    const s = plan.shots[i]
+    return { id: newId(), clip: s.clip_path, src_start: s.src_start, t_start: s.t_start, t_end: s.t_end, x: 0, y: 0, w: 1, h: 1, opacity: 1, radius: 0, ...extra }
+  }
+  const putOverlay = (o, msg) => {
+    const tr = freeTrack(o.t_start, o.t_end)
+    if (tr == null) { toast('这里的画中画轨道都占满了'); return }
+    setSelected(null); setOvSel(o.id)
+    applyOverlays([...overlays, { ...o, track: tr }])
+    if (msg) toast(msg)
+  }
+  // 抠像 on a main-track shot: the shot copied onto a 画中画 lane, only the clicked thing kept
+  const cutShot = (x, y) => (cutKeep.current = true) && putOverlay(shotAsOverlay(selected, { mask: { shape: 'cutout', target: { kind: 'object', x, y }, feather: 0.004 } }),
+                                       '已把主体抠出来放在画中画上：可以单独移动、缩放、加关键帧')
+  const dupClip = () => {
+    if (curOv) {
+      const { group, ...rest } = curOv
+      return putOverlay({ ...rest, id: newId() }, '已复制一份画中画')
+    }
+    if (shotSel) putOverlay(shotAsOverlay(selected), '已把这个片段复制成画中画')
+  }
+  const fromLibrary = () => setLibTab({ tab: 'clips', n: Date.now() })
+  // 分割 at the playhead: a shot in two (backend), a 画中画 in two here (its keyframes go with their half)
+  const splitClip = guard(async () => {
+    if (curOv) {
+      const o = curOv
+      const d = Math.round((time - o.t_start) * fpsT) / fpsT
+      if (d < 0.3 || o.t_end - o.t_start - d < 0.3) { toast('分割点离片段两头太近了（每段至少 0.3 秒）'); return }
+      const keys = o.keys || []
+      const at = keys.length ? { ...keyPose(o, d), t: d } : null
+      const a = { ...o, t_end: o.t_start + d, anim_out: undefined,
+                  keys: keys.length ? [...keys.filter((k) => k.t < d - 1e-3), at] : undefined,
+                  fx: o.fx && { ...o.fx, keys: (o.fx.keys || []).filter((k) => k.t <= d) } }
+      const { group, ...rest } = o
+      const b = { ...rest, id: newId(), t_start: o.t_start + d, src_start: (o.src_start || 0) + d, anim_in: undefined,
+                  keys: keys.length ? [{ ...at, t: 0 }, ...keys.filter((k) => k.t > d + 1e-3).map((k) => ({ ...k, t: k.t - d }))] : undefined,
+                  fx: o.fx && { ...o.fx, keys: (o.fx.keys || []).filter((k) => k.t > d).map((k) => ({ ...k, t: k.t - d })) } }
+      setOvSel(b.id)
+      return applyOverlays(overlays.flatMap((x) => (x.id === o.id ? [a, b] : [x])))
+    }
+    if (shotSel) commit(await runJob({ kind: 'split', analysis: analysis.analysis, plan: plan.plan, index: selected, t: time }))
+  })
+  // ◆: record position / scale / rotation / opacity of the selected 画中画 at the playhead (or take it away)
+  const ovLocalT = curOv ? Math.round((time - curOv.t_start) * fpsT) / fpsT : 0
+  const ovKeys = curOv?.keys || []
+  const keyHere = ovKeys.findIndex((k) => Math.abs(k.t - ovLocalT) < 0.5 / fpsT)
+  const keyPrev = [...ovKeys].reverse().find((k) => k.t < ovLocalT - 0.5 / fpsT)
+  const keyNext = ovKeys.find((k) => k.t > ovLocalT + 0.5 / fpsT)
+  const keyState = curOv && time >= curOv.t_start && time < curOv.t_end
+    ? { enabled: true, on: keyHere >= 0, prev: keyPrev ? curOv.t_start + keyPrev.t + 0.001 : null, next: keyNext ? curOv.t_start + keyNext.t + 0.001 : null }
+    : { enabled: false }
+  const toggleOvKey = () => {
+    if (!curOv) return
+    const keys = keyHere >= 0 ? ovKeys.filter((_, i) => i !== keyHere) : withKey(curOv, ovLocalT, {}, fpsT)
+    applyOverlays(overlays.map((o) => (o.id === curOv.id ? { ...o, keys } : o)))
+  }
+  const toolbar = (
+    <Toolbar kind={curOv ? 'pip' : shotSel ? 'shot' : null} busy={busy} cutTool={cutTool} setCutTool={setCutTool}
+             hasCutout={curOv?.mask?.shape === 'cutout'} onSplit={splitClip} onDup={dupClip} onFromLibrary={fromLibrary}
+             canGrow={!!shotSel && selected > 0} onGrow={(layers) => applyPreset(selected, layers)}
+             drawnStyles={looks?.drawn_styles || []} drawPick={drawPick}
+             onDrawPick={(st) => { setDrawPick(st); if (shotSel) setTime(Math.max(time, shotSel.t_start + 0.01)) }} />
+  )
+
   const draftRef = useRef(null)
   draftRef.current = myDraft
   // after the drag's last state update has rendered (draftRef is set during render)
@@ -552,6 +624,7 @@ export default function App() {
       if ((e.key === 'Delete' || e.key === 'Backspace') && keySel != null && myDraft && !busy) { e.preventDefault(); deleteKey(keySel) }
       if (!(e.ctrlKey || e.metaKey)) return
       const k = e.key.toLowerCase()
+      if (k === 'b' && (shot || curOv) && !busy) { e.preventDefault(); splitClip() }
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
       if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo() }
     }
@@ -628,7 +701,7 @@ export default function App() {
         <button className="primary" disabled={busy} onClick={exportVideo}><Icon name="export" size={18} />导出视频</button>
       </header>
 
-      <Library looks={looks} activeSticker={shot?.sticker?.split('@')[0]} activeStyle={shot?.drawn ? shot.drawn.style || 'lineart' : null}
+      <Library tabRequest={libTab} looks={looks} activeSticker={shot?.sticker?.split('@')[0]} activeStyle={shot?.drawn ? shot.drawn.style || 'lineart' : null}
                onAddSticker={addSticker} onApplyStyle={applyStyle} music={{ path: analysis?.music?.path, name: analysis?.music?.name, tempo: analysis?.music?.tempo }}
                songs={songs} onPickSong={(s) => changeMusic(s)} onBrowseMusic={() => changeMusic()} busy={busy} rail={rail}
                clips={analysis ? analysis.clips.filter((c) => !c.rejected) : []} clipThumbs={clipThumbs} onAddOverlay={(p) => addOverlay(p)}
@@ -650,7 +723,8 @@ export default function App() {
               clipThumbs={clipThumbs} cutTool={cutTool} setCutTool={setCutTool} planPath={plan.plan}
               drawPick={drawPick} onDrawPick={(x, y) => applyDrawn(Math.max(0, shotAt(time)), drawPick, x, y)} ovShowImage={!!ovDraft || !!live?.starting || (live && live.total > live.done)}
               onBox={(b) => { setBoxMode(false); drawShot(selected, shot.drawn?.style || 'lineart', b) }}
-              status={live?.starting ? '正在生成预览…' : null} />
+              status={live?.starting ? '正在生成预览…' : null}
+              toolbar={toolbar} keyState={keyState} onKeyToggle={toggleOvKey} onKeySeek={(t) => setTime(t)} onCutShot={cutShot} />
 
       {curOv && !shot && (
         <OverlayProps ov={curOv} thumb={clipThumbs[curOv.clip]} pip={pipBox(curOv.clip)} busy={busy} onClose={() => setOvSel(null)}

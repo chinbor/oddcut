@@ -418,6 +418,17 @@ def run_grow(job: Job) -> dict:
     return _plan_result(pl, out)
 
 
+def run_split(job: Job) -> dict:
+    """分割 shot `index` at time `t`."""
+    from .pipeline import split_shot
+    p = job.params
+    plan_path = _path(p["plan"])
+    pl, notes = split_shot(load_analysis(_path(p["analysis"])), load_plan(plan_path), int(p["index"]), float(p["t"]))
+    out = _unique(plan_path.parent / f"plan_{pl.seed}.json")
+    save_plan(pl, out)
+    return _plan_result(pl, out, notes)
+
+
 def run_retime(job: Job) -> dict:
     p = job.params
     analysis_path = _path(p["analysis"])
@@ -593,7 +604,7 @@ def run_render(job: Job) -> dict:
 
 
 RUNNERS = {"analyze": run_analyze, "music": run_music, "plan": run_plan, "edit": run_edit, "render": run_render,
-           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "grow_preset": run_grow_preset, "drawn_layer": run_drawn_layer, "retime": run_retime, "live": run_live}
+           "shot": run_shot, "check": run_check, "cut": run_cut, "move": run_move, "split": run_split, "overlays": run_overlays, "grow": run_grow, "grow_auto": run_grow_auto, "grow_preset": run_grow_preset, "drawn_layer": run_drawn_layer, "retime": run_retime, "live": run_live}
 
 
 _LOOKS: dict | None = None

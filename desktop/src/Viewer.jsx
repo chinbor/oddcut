@@ -33,7 +33,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
                                  onMoveKey, onCommit, onDeleteKey, onStillKey, onPlaceAuto, onDropSticker, recordArmed,
                                  onRecorded, boxMode, onBox, status, wave, segment, loop, setLoop, overlays = [], ovSel,
                                  onSelectOverlay, onOverlayDraft, onOverlayCommit, clipThumbs = {}, ovShowImage, cutTool, setCutTool,
-                                 planPath, drawPick, onDrawPick }) {
+                                 planPath, drawPick, onDrawPick, toolbar, keyState, onKeyToggle, onKeySeek, onCutShot }) {
   const boxRef = useRef(null)
   const [aw, ah] = aspect
   const keep = useRef({ t: 0, playing: false })
@@ -237,7 +237,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
       const [x, y] = boxPoint(e, o, el)
       onOverlayDraft(o.id, { mask: { ...m, shape: 'cutout', target: { kind: 'object', x, y } } })
       onOverlayCommit()
-      setCutTool(null)
+      setCutTool('review')
       return
     }
     const pts = [boxPoint(e, o, el)]
@@ -250,7 +250,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
   }
   const ovDown = (e, o) => {
     if (e.button !== 0) return
-    if (o.id === ovSel && cutTool) return cutDown(e, o)
+    if (o.id === ovSel && cutTool && cutTool !== 'review') return cutDown(e, o)
     if (o.id !== ovSel) onSelectOverlay(o.id)
     const el = e.currentTarget
     const p0 = keyPose(o, ovLocal(o))
@@ -376,6 +376,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     setMenu(null)
     if (e.button !== 0) return
     if (drawPick) { e.preventDefault(); onDrawPick(...norm(e)); return }
+    if (cutTool === 'pick' && shot && !ovSel) { e.preventDefault(); onCutShot(...norm(e)); return }   // 抠像 on a main-track shot
     if (boxMode) {
       const [x0, y0] = norm(e)
       let b = [x0, y0, x0, y0]
@@ -397,6 +398,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
 
   return (
     <div className="viewer">
+      {toolbar}
       <div className="stage-box">
         <div className={`beat-badge ${playing ? 'live' : ''}`}>
           <i className={`beat-dot ${strong ? 'strong' : ''}`} style={{ transform: `scale(${1 + pulse * (strong ? 0.9 : 0.45)})`, opacity: 0.45 + 0.55 * pulse }} />
@@ -519,6 +521,12 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
           <Icon name={playing ? 'pause' : 'play'} size={24} fill />
         </button>
         <button className="icon" onClick={() => step(1)} title="下一帧（→）"><Icon name="next" /></button>
+        <span className={`keyctl ${keyState?.enabled ? '' : 'off'}`}>
+          <button className="icon mini" disabled={!keyState?.prev} onClick={() => onKeySeek(keyState.prev)} title="上一个关键帧">‹</button>
+          <button className={`kbtn big ${keyState?.on ? 'on' : ''}`} disabled={!keyState?.enabled} onClick={onKeyToggle}
+                  title={!keyState?.enabled ? '选中一个画中画，才能给它加关键帧' : keyState.on ? '删除这一刻的关键帧' : '在这一刻记下位置、缩放、旋转、透明度'}><i /></button>
+          <button className="icon mini" disabled={!keyState?.next} onClick={() => onKeySeek(keyState.next)} title="下一个关键帧">›</button>
+        </span>
         {segment && (
           <button className={`toggle loop ${loop ? 'on' : ''}`} onClick={() => setLoop((l) => !l)} aria-pressed={loop}
                   title="循环播放选中的这一段"><Icon name="refresh" size={16} />循环</button>

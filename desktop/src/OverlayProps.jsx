@@ -1,6 +1,6 @@
-import React from 'react'
+import React, { useState } from 'react'
 import Icon from './icons.jsx'
-import { ANIMS, BLENDS, EASES, GRID_NAMES, GROW_STEPS, keyPose, LAYOUTS, MASKS, PARTS, withKey } from './pip.js'
+import { ANIMS, BLENDS, EASES, GRID_NAMES, keyAlpha, keyPose, LAYOUTS, MASKS, PARTS, withKey } from './pip.js'
 
 // Box presets: where the picture-in-picture sits (the clip fills its box, cropped to fit)
 const PRESETS = [
@@ -77,6 +77,27 @@ function DrawnFx({ ov, busy, local, fps, onSeek, set, onChange, onCommit, styles
   )
 }
 
+// 手绘's main control, in the basics: the 绘制进度 at the playhead (keyed)
+function DrawnProgress({ ov, busy, local, fps, onChange, onCommit }) {
+  const keys = ov.fx.keys || []
+  let v = keys.length ? keys[keys.length - 1].v : 2
+  if (keys.length && local <= keys[0].t) v = keys[0].v
+  for (let i = 0; i + 1 < keys.length; i++) {
+    if (local >= keys[i].t && local <= keys[i + 1].t) v = keys[i].v + (keys[i + 1].v - keys[i].v) * ((local - keys[i].t) / Math.max(1e-6, keys[i + 1].t - keys[i].t))
+  }
+  const withV = (val) => {
+    const ks = [...keys]
+    const j = ks.findIndex((k) => Math.abs(k.t - local) < 0.5 / fps)
+    if (j >= 0) ks[j] = { ...ks[j], v: val }
+    else ks.push({ t: Math.round(local * fps) / fps, v: val })
+    return ks.sort((a, b) => a.t - b.t)
+  }
+  return (
+    <Slider label="绘制进度" min={0} max={2} step={0.01} value={Math.round(v * 100) / 100} fmt={(x) => (x >= 2 ? '实拍' : x > 1 ? '变回实拍' : `${Math.round(x * 100)}%`)}
+            disabled={busy} onChange={(x) => onChange({ fx: { ...ov.fx, keys: withV(x) } })} onCommit={onCommit} />
+  )
+}
+
 // Right panel while a picture-in-picture clip (or 宫格) is selected. Every change is one undo step.
 export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, onCommit, onDelete, local, fps, onSeek,
                                        clips, clipThumbs, cutTool, setCutTool, onRemoveGroup, groupWhy, drawnStyles = [] }) {
@@ -97,27 +118,54 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
   }
   const anim = (which) => ({ type: 'none', beats: 1, ...ov[which] })
 
+  const [more, setMore] = useState(() => { try { return localStorage.getItem('oddcut.more.pip') === '1' } catch { return false } })
+  const toggleMore = () => setMore((m) => { try { localStorage.setItem('oddcut.more.pip', m ? '0' : '1') } catch {} ; return !m })
+  const alpha = keyAlpha(ov, local)
+  // the four basics: with keyframes they go into the keyframe at the playhead, else into the layer itself
+  const setBasic = (patch) => {
+    if (keys.length) return onChange({ keys: withKey(ov, local, patch, fps) })
+    const out = {}
+    if (patch.x != null) out.x = patch.x - ov.w / 2
+    if (patch.y != null) out.y = patch.y - ov.h / 2
+    if (patch.s != null) out.sc = patch.s
+    if (patch.r != null) out.rot = patch.r
+    if (patch.a != null) out.opacity = patch.a
+    onChange(out)
+  }
+  const title = ov.fx?.kind === 'drawn' ? `手绘 · ${ov.group?.label || ''}` : ov.group?.kind === 'grow' ? `万物生长 · 第 ${ov.group.layer} 层` : ov.grid ? GRID_NAMES[ov.grid.layout] : '画中画'
+
   return (
     <aside className="props">
       <header className="props-head">
         {thumb ? <img src={thumb} alt="" /> : <i className="thumb-ph" />}
-        <span><b>{ov.fx?.kind === 'drawn' ? `手绘层 · ${ov.group?.label || ''}` : ov.group ? `万物生长 · 第 ${ov.group.layer}/${ov.group.of} 层` : ov.grid ? GRID_NAMES[ov.grid.layout] : '画中画'} · 轨道 {ov.track + 1}</b>
-          <small>{ov.grid ? `${ov.grid.cells.length} 段素材` : ov.name} · {ov.t_start.toFixed(1)} – {ov.t_end.toFixed(1)} 秒 · 共 {len.toFixed(1)} 秒</small></span>
+        <span><b>{title}</b><small>{ov.t_start.toFixed(1)} – {ov.t_end.toFixed(1)} 秒</small></span>
+        <button className="icon" disabled={busy} onClick={onDelete} title="删除"><Icon name="trash" size={18} /></button>
         <button className="icon" onClick={onClose} title="关闭（Esc）"><Icon name="close" /></button>
       </header>
 
+      <section>
+        {ov.fx?.kind === 'drawn' && <DrawnProgress ov={ov} busy={busy} local={local} fps={fps} onChange={onChange} onCommit={onCommit} />}
+        <Slider label="位置 X" min={-0.5} max={1.5} step={0.005} value={Math.round(pose.x * 1000) / 1000} fmt={(v) => `${Math.round(v * 100)}`} disabled={busy}
+                onChange={(v) => setBasic({ x: v })} onCommit={onCommit} />
+        <Slider label="位置 Y" min={-0.5} max={1.5} step={0.005} value={Math.round(pose.y * 1000) / 1000} fmt={(v) => `${Math.round(v * 100)}`} disabled={busy}
+                onChange={(v) => setBasic({ y: v })} onCommit={onCommit} />
+        <Slider label="缩放" min={0.2} max={3} step={0.01} value={Math.round(pose.s * 100) / 100} fmt={(v) => `${Math.round(v * 100)}%`} disabled={busy}
+                onChange={(v) => setBasic({ s: v })} onCommit={onCommit} />
+        <Slider label="旋转" min={-180} max={180} step={1} value={Math.round(pose.r)} fmt={(v) => `${v}°`} disabled={busy}
+                onChange={(v) => setBasic({ r: v })} onCommit={onCommit} />
+        <Slider label="透明度" min={0} max={1} step={0.01} value={Math.round((keys.length ? alpha : ov.opacity) * 100) / 100} fmt={(v) => `${Math.round(v * 100)}%`}
+                disabled={busy} onChange={(v) => setBasic({ a: v })} onCommit={onCommit} />
+        <p className="caption">{keys.length
+          ? `有 ${keys.length} 个关键帧${here >= 0 ? '（播放头在第 ' + (here + 1) + ' 个上）' : ''}：改这里会记到播放头这一刻。`
+          : '想让它动起来：点播放按钮旁边的 ◆ 记下这一刻，换个时刻再改数值或在画面上拖。'}</p>
+      </section>
+
+      <button className={`more-toggle ${more ? 'open' : ''}`} onClick={toggleMore}>更多<Icon name="chevronDown" size={16} /></button>
+      {more && (
+        <div className="more-body">
       {ov.fx?.kind === 'drawn' && <DrawnFx ov={ov} busy={busy} local={local} fps={fps} onSeek={onSeek} set={set} onChange={onChange}
                                            onCommit={onCommit} styles={drawnStyles} />}
 
-      {ov.group && ov.group.kind === 'grow' && (
-        <section>
-          <h3>万物生长 · {ov.group.label}</h3>
-          {groupWhy && <p className="caption grow-why">自动选的：{groupWhy}</p>}
-          <ol className="grow-steps">{GROW_STEPS.map((s, i) => <li key={i}>{s}</li>)}</ol>
-          <p className="caption">这一层就是普通的画中画：改抠像、拖关键帧、换时间都可以。</p>
-          <button className="danger wide" disabled={busy} onClick={() => onRemoveGroup(ov.group.id)}><Icon name="trash" size={16} />删除整个万物生长</button>
-        </section>
-      )}
 
       {ov.grid && (
         <section>
@@ -219,25 +267,10 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
       <section>
         <h3>混合</h3>
         <Chips items={BLENDS} value={ov.blend || 'normal'} disabled={busy} onPick={(blend) => set({ blend })} />
-        <Slider label="不透明度" min={0.1} max={1} step={0.05} value={ov.opacity} fmt={(v) => `${Math.round(v * 100)}%`} disabled={busy}
-                onChange={(v) => onChange({ opacity: v })} onCommit={onCommit} />
       </section>
 
       <section>
-        <h3>关键帧动画</h3>
-        <div className="keybar">
-          <button className="icon" disabled={busy || !prev} onClick={() => onSeek(ov.t_start + prev.t + 0.001)} title="上一个关键帧"><Icon name="prev" size={18} /></button>
-          <button className={`kbtn ${here >= 0 ? 'on' : ''}`} disabled={busy} onClick={toggleKey}
-                  title={here >= 0 ? '删除播放头这里的关键帧' : '在播放头这里加一个关键帧'}><i /></button>
-          <button className="icon" disabled={busy || !next} onClick={() => onSeek(ov.t_start + next.t + 0.001)} title="下一个关键帧"><Icon name="next" size={18} /></button>
-          <span className="keybar-text">{keys.length ? (here >= 0 ? `第 ${here + 1} 个关键帧，共 ${keys.length} 个` : `播放头不在关键帧上（共 ${keys.length} 个）`) : '还没有关键帧'}</span>
-        </div>
-        {keys.length > 0 && (
-          <Slider label="缩放" min={0.2} max={3} step={0.01} value={Math.round(pose.s * 100) / 100} fmt={(v) => `${Math.round(v * 100)}%`} disabled={busy}
-                  onChange={(v) => setPose({ s: v })} onCommit={onCommit} />
-        )}
-        <Slider label="旋转" min={-180} max={180} step={1} value={Math.round(pose.r)} fmt={(v) => `${v}°`} disabled={busy}
-                onChange={(v) => setPose({ r: v })} onCommit={onCommit} />
+        <h3>关键帧</h3>
         {here >= 0 && here < keys.length - 1 && (
           <div className="field">
             <span className="field-label">到下一个关键帧怎么动</span>
@@ -247,7 +280,7 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
         )}
         <Slider label="动感模糊" min={0} max={1.5} step={0.1} value={ov.mblur || 0} fmt={(v) => `${Math.round(v * 100)}%`} disabled={busy}
                 onChange={(v) => onChange({ mblur: v })} onCommit={onCommit} />
-        <p className="caption">{keys.length ? '有关键帧时，在画面上拖动、缩放、旋转都会记到播放头这一刻。' : '点 ◆ 在这一刻记下位置；换个时刻再拖动画面，就会动起来。'}</p>
+        {keys.length > 0 && <button className="wide" disabled={busy} onClick={() => set({ keys: [] })}>清除全部关键帧</button>}
       </section>
 
       <section>
@@ -287,8 +320,15 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
           ))}
         </div>
         <p className="caption">数字大的轨道叠在上面。在时间轴上拖动可改时间和轨道，拖两端可剪短。</p>
-        <button className="danger wide" disabled={busy} onClick={onDelete}><Icon name="trash" size={16} />删除</button>
       </section>
+          {ov.group?.kind === 'grow' && (
+            <section>
+              <h3>万物生长</h3>
+              <button className="danger wide" disabled={busy} onClick={() => onRemoveGroup(ov.group.id)}><Icon name="trash" size={16} />删除整个万物生长</button>
+            </section>
+          )}
+        </div>
+      )}
     </aside>
   )
 }
