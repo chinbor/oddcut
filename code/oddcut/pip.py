@@ -6,6 +6,7 @@ An overlay (plan.looks.overlays[i], checked by pipeline._check_overlays):
     opacity, blend                             normal | screen | multiply | overlay | lighten | darken | add
     radius, border                             rounded corners (share of the box's short side), white outline
     mask {shape, cx, cy, size, rot, feather, invert}
+         stroke {color, width}                 抠像 only: an outline around the cut-out (width: share of the box's short side)
                                                none | circle | heart | star | rect | linear | mirror, in box space
     keys [{t, x, y, s, r, a, e}]               keyframes (t from the overlay's start): centre, scale, rotation,
                                                opacity (a, 0..1, times the layer's opacity);
@@ -294,6 +295,7 @@ class _Layer:
     def __init__(self, o: dict, w: int, h: int, fps: float, grade: str, preview: bool, cache_dir: Path | None = None):
         self.o = o
         self.cut = None                              # 抠像: one mask per frame (box space, SEG_H tall)
+        self.stroke = None                           # 抠像 描边: this frame's outline alpha (box size), set by cut_alpha
         self.f = 0
         self.fps = fps
         self.drawing = None                          # 手绘: built from the first frame
@@ -339,6 +341,11 @@ class _Layer:
         if mk.get("dilate"):
             k = max(1, int(float(mk["dilate"]) * m.shape[0])) | 1
             m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        st = mk.get("stroke")
+        if st and not mk.get("invert"):
+            k = max(1, int(round(float(st.get("width", 0.02)) * min(m.shape) * 2))) | 1
+            ring = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+            self.stroke = cv2.resize(cv2.GaussianBlur(ring, (0, 0), 0.8), (self.bw, self.bh), interpolation=cv2.INTER_LINEAR)
         feather = float(mk.get("feather", 0.0))
         m = cv2.GaussianBlur(m, (0, 0), 0.8 + feather * m.shape[0] * 0.5)
         a = cv2.resize(m, (self.bw, self.bh), interpolation=cv2.INTER_LINEAR)
@@ -439,6 +446,11 @@ def _place(base: np.ndarray, layer: _Layer, local: float, beat: float):
     mode = o.get("blend", "normal")
     if mode != "normal":
         img = (np.clip(_blend(roi.astype(np.float32) / 255, img.astype(np.float32) / 255, mode), 0, 1) * 255).astype(np.uint8)
+    if cut is not None and layer.stroke is not None:   # 描边: the outline colour first, the cut-out over it
+        s_w = cv2.warpAffine(layer.stroke, M, size, flags=cv2.INTER_LINEAR) * opacity
+        col = ((layer.o.get("mask") or {}).get("stroke") or {}).get("color", "#ffffff")
+        rgb_c = np.array([int(col[i:i + 2], 16) for i in (1, 3, 5)], np.uint8)
+        roi[:] = cv2.blendLinear(roi, np.broadcast_to(rgb_c, roi.shape).copy(), 1.0 - s_w, s_w)
     out = cv2.blendLinear(roi, img, inv, a_w)
     if b_w is not None:
         out = cv2.blendLinear(out, np.full_like(out, 255), binv, b_w)

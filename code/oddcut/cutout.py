@@ -1,7 +1,8 @@
 """抠像 (cutout) for picture-in-picture: a mask for every frame of part of a clip.
 
 What to cut out (overlay.mask = {"shape": "cutout", "target": ..., "brush": [...], "feather": ...}):
-    {"kind": "object", "x": .., "y": ..}   the thing under that point (0..1 of the box) in the first frame:
+    {"kind": "object", "x": .., "y": ..,   the thing under that point (0..1 of the box) in the frame at t (seconds
+     "t": ..}                              from the overlay's start; the first frame without it):
                                            YOLO-seg refined with GrabCut, or a depth blob when YOLO has no name for it
     {"kind": "region", "parts": [...]}     regions of the picture (growth.plan_layers), any of
                                            things (things standing low in front), ground, mid, far, sky;
@@ -236,14 +237,17 @@ def cutout_masks(path: str, start: float, frames: int, fps: float, aspect: float
                 pass
     clip = _frames(path, start, frames, fps, aspect)
     n, h, w = clip.shape[:3]
-    m = _clean(first_mask(analyse(clip[0]), target, (h, w)))
+    k0 = min(n - 1, max(0, int(round(float(target.get("t") or 0) * fps))))   # the frame the user clicked on
+    m0 = _clean(first_mask(analyse(clip[k0]), target, (h, w)))
     out = np.zeros((n, h, w), bool)
-    out[0] = m
-    for f in range(1, n):
-        if m.any():
-            moved = growth._flow_masks(clip[f - 1], clip[f], [m])
-            m = _clean(moved[0]) if moved else np.zeros_like(m)
-        out[f] = m
+    out[k0] = m0
+    for rng in (range(k0 + 1, n), range(k0 - 1, -1, -1)):              # followed forwards, then backwards
+        m = m0
+        for f in rng:
+            if m.any():
+                moved = growth._flow_masks(clip[f - 1 if rng.step > 0 else f + 1], clip[f], [m])
+                m = _clean(moved[0]) if moved else np.zeros_like(m)
+            out[f] = m
     if cached is not None:
         cached.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(cached, m=np.packbits(out, axis=-1), n=n, h=h, w=w)

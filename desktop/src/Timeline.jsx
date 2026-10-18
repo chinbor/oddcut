@@ -27,7 +27,8 @@ const fmtS = (t) => (Number.isInteger(t) ? `${t}s` : `${t.toFixed(1)}s`)
 export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot, aspect = 0.5625, wave, time, onSeek, selected, onSelect, stickerName, styleName,
                                    draft, onInOut, onCutMove, busy, pending, live, looks, keySel, onKeySelect, onKeyTime,
                                    metronome, setMetronome, overlays = [], ovSel, onSelectOverlay, onOverlayDraft, onOverlayCommit,
-                                   onDropClip, onDropGrid, clipThumbs = {}, clipInfo }) {
+                                   onDropClip, onDropGrid, clipThumbs = {}, clipInfo, onTrim, onShotToPip, onCopyItem, canPaste,
+                                   onPasteAt, onDeleteOverlay }) {
   const scroller = useRef(null)
   const canvas = useRef(null)
   const [width, setWidth] = useState(800)
@@ -36,6 +37,15 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
   const [snap, setSnap] = useState(true)
   const [cutDrag, setCutDrag] = useState(null)
   const [shotDrag, setShotDrag] = useState(null)   // a clip being dragged to a new place: {src, dx, dst}
+  const [trimDrag, setTrimDrag] = useState(null)   // a main-track clip's edge being dragged: {i, side, d}
+  const [pipGhost, setPipGhost] = useState(null)   // a main-track clip dragged over a 画中画 track: {k, t, len}
+  const [menu, setMenu] = useState(null)           // right-click menu: {x, y, item: {shot} | {ov}, t, k}
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [menu])
   const zoomTimer = useRef(null)
   const zoomRef = useRef(1)                          // latest zoom, for wheel events that arrive faster than renders
   const duration = plan.duration
@@ -146,12 +156,23 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
   const clipDown = (e, i) => {
     if (e.button !== 0) return
     e.preventDefault(); e.stopPropagation()
-    const x0 = e.clientX
+    const x0 = e.clientX, y0 = e.clientY
     const centers = plan.shots.map((s) => (s.t_start + s.t_end) / 2)
+    const s0 = plan.shots[i]
+    const grab = tAt(e.clientX) - s0.t_start
     let st = null
     const mv = (ev) => {
       const dx = ev.clientX - x0
-      if ((!st && Math.abs(dx) < 5) || busy) return
+      if ((!st && Math.abs(dx) < 5 && Math.abs(ev.clientY - y0) < 5) || busy) return
+      const lane = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.track.pip')
+      if (lane) {
+        const t = Math.max(0, Math.min(duration - 0.3, tAt(ev.clientX) - grab))
+        st = { src: i, pip: Number(lane.dataset.k), t }
+        setShotDrag(null)
+        setPipGhost({ k: st.pip, t, len: s0.t_end - s0.t_start })
+        return
+      }
+      setPipGhost(null)
       const tp = tAt(ev.clientX)
       st = { src: i, dx, dst: centers.filter((c, j) => j !== i && c < tp).length }
       setShotDrag(st)
@@ -159,9 +180,10 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     const end = (keep) => {
       window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up)
       window.removeEventListener('keydown', esc, true)
-      setShotDrag(null)
+      setShotDrag(null); setPipGhost(null)
       if (!st) { onSelect(i); onPlayShot(i) }
-      else if (keep && st.dst !== i) onMoveShot(i, st.dst)
+      else if (keep && st.pip != null) onShotToPip(i, st.pip, st.t)
+      else if (keep && st.dst != null && st.dst !== i) onMoveShot(i, st.dst)
     }
     const up = () => end(true)
     const esc = (ev) => { if (ev.key === 'Escape') { ev.stopImmediatePropagation(); st = st || { src: i, dst: i }; end(false) } }
@@ -227,6 +249,43 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
     const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); if (moved) onInOut(which, v, true) }
     window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
   }
+  // 修剪: drag a main-track clip's edge; it gets shorter / longer and the clips after it follow (as in 剪映)
+  const trimDown = (e, i, side) => {
+    if (e.button !== 0 || busy) return
+    e.preventDefault(); e.stopPropagation()
+    const s = plan.shots[i]
+    const len = s.t_end - s.t_start
+    const clipLen = clipInfo?.(s.clip_path)?.duration ?? 1e9
+    const minLen = 0.4
+    let d = 0, t = null
+    const mv = (ev) => {
+      if (side === 'out') {
+        let end = Math.max(s.t_start + minLen, Math.min(tAt(ev.clientX), s.t_start + clipLen - s.src_start - 0.05))
+        end = snapT(end, ev, s.t_start + minLen, s.t_start + clipLen - s.src_start - 0.05)
+        d = end - s.t_end
+        t = end
+      } else {
+        const cut = Math.max(-s.src_start, Math.min(tAt(ev.clientX) - s.t_start, len - minLen))
+        d = -cut
+        t = s.t_start + cut
+      }
+      setTrimDrag({ i, side, d })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up)
+      setTrimDrag(null)
+      if (t != null && Math.abs(d) > 0.5 / fps) onTrim(i, side, t, false)
+    }
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
+  }
+  const trimShift = (j) => (trimDrag && j > trimDrag.i ? trimDrag.d * scale : 0)
+  const openMenu = (e, item, k = null) => {
+    e.preventDefault(); e.stopPropagation()
+    if (item?.shot != null) onSelect(item.shot)
+    if (item?.ov != null) onSelectOverlay(item.ov)
+    setMenu({ x: e.clientX, y: e.clientY, item, t: Math.max(0, tAt(e.clientX)), k })
+  }
+
   // keyframe diamonds: click = select + jump there; drag = move in time (whole frames, between its neighbours)
   const diamond = (e, i, j, k, keys) => {
     e.stopPropagation(); e.preventDefault()
@@ -390,13 +449,14 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
           {Array.from({ length: lanes }, (_, n) => lanes - 1 - n).map((k) => {
             const mine = overlays.filter((o) => o.track === k)
             return (
-              <div key={`pip${k}`} className="track pip" {...laneDrop(k)}>
+              <div key={`pip${k}`} className="track pip" data-k={k} {...laneDrop(k)} onContextMenu={(e) => openMenu(e, null, k)}>
                 <label><Icon name="film" size={14} />画中画 {k + 1}</label>
-                {!mine.length && <span className="lane-hint" style={{ left: LABEL_W + 10 }}>把左边「素材」里的视频拖到这里，叠在画面上播放</span>}
+                {!mine.length && !pipGhost && <span className="lane-hint" style={{ left: LABEL_W + 10 }}>把下面「画面」里的一段拖上来，或者复制后粘贴，就成了画中画</span>}
+                {pipGhost?.k === k && <div className="bar ov ghost" style={{ left: x(pipGhost.t) + 1, width: Math.max(8, Math.min(pipGhost.len, duration - pipGhost.t) * scale - 2) }}><span>放到这里</span></div>}
                 {mine.map((o) => (
                   <div key={o.id} className={`bar ov ${ovSel === o.id ? 'sel' : ''} ${o.group ? 'grp' : ''}`}
                        style={{ left: x(o.t_start) + 1, width: Math.max(8, (o.t_end - o.t_start) * scale - 2) }}
-                       onPointerDown={(e) => ovDrag(e, o, 'body')} title={`${o.name} · ${o.t_start.toFixed(2)} – ${o.t_end.toFixed(2)} 秒（拖动改时间/轨道，拖两端剪短）`}>
+                       onPointerDown={(e) => ovDrag(e, o, 'body')} onContextMenu={(e) => openMenu(e, { ov: o.id }, k)} title={`${o.name} · ${o.t_start.toFixed(2)} – ${o.t_end.toFixed(2)} 秒（拖动改时间/轨道，拖两端剪短）`}>
                     <i className="edge l" onPointerDown={(e) => ovDrag(e, o, 'in')} />
                     {o.anim_in && <i className="anim-wedge in" style={{ width: o.anim_in.beats * beatLen * scale }} title="入场动画" />}
                     {o.anim_out && <i className="anim-wedge out" style={{ width: o.anim_out.beats * beatLen * scale }} title="出场动画" />}
@@ -420,12 +480,16 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
           <div className="track video">
             <label><Icon name="film" size={16} />画面</label>
             {plan.shots.map((s, i) => {
-              const w = Math.max(3, (s.t_end - s.t_start) * scale - 2)
+              const tw = trimDrag?.i === i ? trimDrag.d * scale : 0
+              const w = Math.max(3, (s.t_end - s.t_start) * scale - 2 + tw)
+              const tr = trimShift(i)
               return (
                 <div key={i} className={`clip ${selected === i ? 'sel' : ''} ${pending.includes(i) ? 'pending' : ''} ${shotDrag?.src === i ? 'lifted' : ''}`}
-                     style={{ left: x(s.t_start) + 1, width: w, ...shift(i) }}
-                     onPointerDown={(e) => clipDown(e, i)}
-                     title={`镜头 ${i + 1} · ${s.clip} · ${(s.t_end - s.t_start).toFixed(1)} 秒（点一下单独播放，左右拖动调换顺序）`}>
+                     style={{ left: x(s.t_start) + 1, width: w, ...(tr ? { transform: `translateX(${tr}px)` } : shift(i)) }}
+                     onPointerDown={(e) => clipDown(e, i)} onContextMenu={(e) => openMenu(e, { shot: i })}
+                     title={`镜头 ${i + 1} · ${s.clip} · ${(s.t_end - s.t_start).toFixed(1)} 秒（拖两边改长短，左右拖调换顺序，往上拖成画中画）`}>
+                  {selected === i && !shotDrag && <i className="trim l" onPointerDown={(e) => trimDown(e, i, 'in')} title="拖动剪掉开头" />}
+                  {selected === i && !shotDrag && <i className="trim r" onPointerDown={(e) => trimDown(e, i, 'out')} title="拖动改结尾（后面的片段跟着移动）" />}
                   <div className="strip">{filmstrip(i, w).map((src, k) => <img key={k} src={src} alt="" draggable={false} />)}</div>
                   <span className="num">{i + 1}</span>
                   {s.grow && !s.grow.off && (() => {
@@ -446,7 +510,7 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
             {plan.shots.slice(1).map((s, j) => {
               const cs = cutState(s.t_start)
               return (
-                <i key={`c${j}`} className={`cut ${busy || shotDrag ? 'off' : ''} ${cutDrag?.k === j + 1 ? 'dragging' : ''}`} style={{ left: x(s.t_start) - 5 }}
+                <i key={`c${j}`} className={`cut ${busy || shotDrag || trimDrag || selected === j || selected === j + 1 ? 'off' : ''} ${cutDrag?.k === j + 1 ? 'dragging' : ''}`} style={{ left: x(s.t_start) - 5 }}
                    onPointerDown={(e) => startCut(e, j + 1)} title={`${cs.text}。拖动可调整切点`}>
                   <b className={`cut-dot ${cs.on ? 'on' : ''}`} />
                 </i>
@@ -508,9 +572,21 @@ export default function Timeline({ plan, thumbs, strips, onPlayShot, onMoveShot,
             </div>
           )}
           <div className="playhead" style={{ left: x(time) }} onPointerDown={scrub} />
+          {trimDrag && (
+            <div className="cut-ghost free" style={{ left: x(plan.shots[trimDrag.i].t_end + trimDrag.d) }}>
+              <span>{(plan.shots[trimDrag.i].t_end - plan.shots[trimDrag.i].t_start + trimDrag.d).toFixed(1)} 秒</span>
+            </div>
+          )}
           {zoomNote && <div className="zoom-note" style={{ left: (scroller.current?.scrollLeft || 0) + (width / 2) }}>{zoomNote}</div>}
         </div>
       </div>
+      {menu && (
+        <div className="ctx-menu" style={{ left: menu.x, top: menu.y }} onPointerDown={(e) => e.stopPropagation()}>
+          {menu.item && <button onClick={() => { onCopyItem(menu.item); setMenu(null) }}>复制<kbd>Ctrl+C</kbd></button>}
+          <button disabled={!canPaste} onClick={() => { onPasteAt(menu.t, menu.k); setMenu(null) }}>粘贴到这里<kbd>Ctrl+V</kbd></button>
+          {menu.item?.ov != null && <button onClick={() => { onDeleteOverlay(menu.item.ov); setMenu(null) }}>删除<kbd>Delete</kbd></button>}
+        </div>
+      )}
     </section>
   )
 }

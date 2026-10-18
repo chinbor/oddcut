@@ -432,7 +432,7 @@ export default function App() {
     if (msg) toast(msg)
   }
   // 抠像 on a main-track shot: the shot copied onto a 画中画 lane, only the clicked thing kept
-  const cutShot = (x, y) => (cutKeep.current = true) && putOverlay(shotAsOverlay(selected, { mask: { shape: 'cutout', target: { kind: 'object', x, y }, feather: 0.004 } }),
+  const cutShot = (x, y) => (cutKeep.current = true) && putOverlay(shotAsOverlay(selected, { mask: { shape: 'cutout', target: { kind: 'object', x, y, t: Math.max(0, Math.round((time - plan.shots[selected].t_start) * fpsT) / fpsT) }, feather: 0.004 } }),
                                        '已把主体抠出来放在画中画上：可以单独移动、缩放、加关键帧')
   const dupClip = () => {
     if (curOv) {
@@ -442,6 +442,37 @@ export default function App() {
     if (shotSel) putOverlay(shotAsOverlay(selected), '已把这个片段复制成画中画')
   }
   const fromLibrary = () => setLibTab({ tab: 'clips', n: Date.now() })
+  // 复制 / 粘贴, as in 剪映: copy a piece of the main track (or a 画中画), paste it onto a 画中画 track at the playhead
+  const [clipboard, setClipboard] = useState(null)
+  const copyItem = ({ ov, shot: si }) => {
+    const o = ov != null ? overlays.find((x) => x.id === ov) : null
+    if (o) { const { group, fx, ...rest } = o; setClipboard({ o: rest }); toast('已复制。把播放头移到要放的位置，按 Ctrl+V 粘贴') }
+    else if (si != null) { setClipboard({ o: shotAsOverlay(si) }); toast('已复制这一段。把播放头移到要放的位置，按 Ctrl+V 粘贴成画中画') }
+  }
+  const copyClip = () => copyItem(curOv ? { ov: curOv.id } : { shot: shotSel ? selected : null })
+  const pasteAt = (src, t0, track = null) => {
+    const dur = plan.duration
+    const len = Math.min(src.t_end - src.t_start, dur - t0)
+    if (len < 0.3) { toast('这里离结尾太近，放不下'); return }
+    const o = { ...src, id: newId(), t_start: t0, t_end: t0 + len }
+    const tr = track != null && freeTrack(o.t_start, o.t_end) != null && !overlays.some((x) => x.track === track && x.t_start < o.t_end - 1e-3 && o.t_start < x.t_end - 1e-3)
+      ? track : freeTrack(o.t_start, o.t_end)
+    if (tr == null) { toast('这里的画中画轨道都占满了'); return }
+    setSelected(null); setOvSel(o.id)
+    applyOverlays([...overlays, { ...o, track: tr }])
+  }
+  const pasteClip = () => { if (clipboard) pasteAt(clipboard.o, Math.max(0, Math.min(time, plan.duration - 0.3))) }
+  // a main-track piece dragged down onto a 画中画 track
+  const shotToPip = (i, track, t0) => pasteAt(shotAsOverlay(i), Math.max(0, t0), track)
+  // 修剪: a main-track piece's edge dragged (the pieces after it move up / back)
+  const trimShot = guard(async (i, side, t, snap) => {
+    commit(await runJob({ kind: 'trim', analysis: analysis.analysis, plan: plan.plan, index: i, side, t, snap }))
+  })
+  const setStroke = (st) => {
+    if (!curOv) return
+    const { stroke, ...m } = curOv.mask || {}
+    applyOverlays(overlays.map((o) => (o.id === curOv.id ? { ...o, mask: st ? { ...m, stroke: st } : m } : o)))
+  }
   // 分割 at the playhead: a shot in two (backend), a 画中画 in two here (its keyframes go with their half)
   const splitClip = guard(async () => {
     if (curOv) {
@@ -478,7 +509,8 @@ export default function App() {
   }
   const toolbar = (
     <Toolbar kind={curOv ? 'pip' : shotSel ? 'shot' : null} busy={busy} cutTool={cutTool} setCutTool={setCutTool}
-             hasCutout={curOv?.mask?.shape === 'cutout'} onSplit={splitClip} onDup={dupClip} onFromLibrary={fromLibrary}
+             hasCutout={curOv?.mask?.shape === 'cutout'} stroke={curOv?.mask?.stroke || null} onStroke={setStroke}
+             onSplit={splitClip} onCopy={copyClip} onPaste={pasteClip} canPaste={!!clipboard} onDelete={() => curOv && deleteOverlay(curOv.id)}
              canGrow={!!shotSel && selected > 0} onGrow={(layers) => applyPreset(selected, layers)}
              drawnStyles={looks?.drawn_styles || []} drawPick={drawPick}
              onDrawPick={(st) => { setDrawPick(st); if (shotSel) setTime(Math.max(time, shotSel.t_start + 0.01)) }} />
@@ -625,6 +657,8 @@ export default function App() {
       if (!(e.ctrlKey || e.metaKey)) return
       const k = e.key.toLowerCase()
       if (k === 'b' && (shot || curOv) && !busy) { e.preventDefault(); splitClip() }
+      if (k === 'c' && (shot || curOv)) { e.preventDefault(); copyClip() }
+      if (k === 'v' && clipboard && !busy) { e.preventDefault(); pasteClip() }
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
       if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo() }
     }
@@ -760,7 +794,10 @@ export default function App() {
                 onSelect={setSelected} onPlayShot={playShot} onMoveShot={moveShot} aspect={aw / ah}
                 overlays={overlays} ovSel={ovSel} onSelectOverlay={selectOverlay} onOverlayDraft={editOverlay}
                 onOverlayCommit={commitOverlays} onDropClip={addOverlay} onDropGrid={addGrid} clipThumbs={clipThumbs} clipInfo={clipInfo} stickerName={stickerName} styleName={styleName} draft={myDraft} onInOut={onInOut}
-                onCutMove={moveCut} busy={busy} pending={live?.pending || []} live={live} looks={looks}
+                onCutMove={moveCut} onTrim={trimShot} onShotToPip={shotToPip}
+                onCopyItem={copyItem} canPaste={!!clipboard}
+                onPasteAt={(t, track) => clipboard && pasteAt(clipboard.o, Math.max(0, Math.min(t, plan.duration - 0.3)), track)}
+                onDeleteOverlay={deleteOverlay} busy={busy} pending={live?.pending || []} live={live} looks={looks}
                 keySel={keySel} onKeySelect={setKeySel} onKeyTime={keyTime} metronome={metronome} setMetronome={setMetronome} />
       {toastsEl}
     </div>

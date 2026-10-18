@@ -157,7 +157,7 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
                 disabled={busy} onChange={(v) => setBasic({ a: v })} onCommit={onCommit} />
         <p className="caption">{keys.length
           ? `有 ${keys.length} 个关键帧${here >= 0 ? '（播放头在第 ' + (here + 1) + ' 个上）' : ''}：改这里会记到播放头这一刻。`
-          : '想让它动起来：点播放按钮旁边的 ◆ 记下这一刻，换个时刻再改数值或在画面上拖。'}</p>
+          : '想让它动起来：点下面的「添加关键帧」，换个时刻再在画面上拖或改数值。'}</p>
       </section>
 
       <button className={`more-toggle ${more ? 'open' : ''}`} onClick={toggleMore}>更多<Icon name="chevronDown" size={16} /></button>
@@ -193,72 +193,16 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
         </section>
       )}
 
-      <section>
-        <h3>位置</h3>
-        <div className="preset-grid">
-          {PRESETS.map(([id, label, f]) => (
-            <button key={id} disabled={busy} onClick={() => set({ ...f(ov, pip), keys: undefined, rot: 0 })} className={`preset ${id}`}>
-              <i className="preset-ico"><b /></i>{label}
-            </button>
-          ))}
-        </div>
-        <p className="caption">在预览画面上拖动移动，拖四角缩放，拖上面的圆点旋转（按住 Shift 每 15°）。</p>
-      </section>
-
       {!ov.grid && (
         <section>
           <h3>蒙版</h3>
-          <Chips items={MASKS} value={mask.shape} disabled={busy}
-                 onPick={(shape) => setMask(shape === 'cutout' ? { shape, target: ov.mask?.target || { kind: 'region', parts: ['things'] }, feather: 0.004 } : { shape })} />
-          {mask.shape === 'cutout' && (
-            <>
-              <div className="field">
-                <span className="field-label">抠什么</span>
-                <div className="style-chips">
-                  <button className={cutTool === 'pick' ? 'on' : ''} disabled={busy} onClick={() => setCutTool(cutTool === 'pick' ? null : 'pick')}>点选物体</button>
-                  {PARTS.map(([id, l]) => {
-                    const on = mask.target?.kind === 'region' && (mask.target.parts || []).includes(id)
-                    return (
-                      <button key={id} className={on ? 'on' : ''} disabled={busy}
-                              onClick={() => {
-                                const cur = mask.target?.kind === 'region' ? mask.target.parts || [] : []
-                                const parts = on ? cur.filter((p) => p !== id) : [...cur, id]
-                                if (parts.length) setMask({ target: { kind: 'region', parts } })
-                              }}>{l}</button>
-                    )
-                  })}
-                </div>
-                <p className="caption">{cutTool === 'pick' ? '在预览上点一下要抠的物体' : mask.target?.kind === 'object' ? '抠的是点选的那个物体，会跟着画面动' : '可以多选，合在一起抠出来'}</p>
-              </div>
-              <div className="field">
-                <span className="field-label">画笔修边</span>
-                <div className="style-chips">
-                  <button className={cutTool === 'add' ? 'on' : ''} disabled={busy} onClick={() => setCutTool(cutTool === 'add' ? null : 'add')}>增加</button>
-                  <button className={cutTool === 'sub' ? 'on' : ''} disabled={busy} onClick={() => setCutTool(cutTool === 'sub' ? null : 'sub')}>擦除</button>
-                  {(mask.brush || []).length > 0 && <button disabled={busy} onClick={() => setMask({ brush: [] })}>清除画笔（{mask.brush.length}）</button>}
-                </div>
-              </div>
-              <Slider label="羽化" min={0} max={0.1} step={0.002} value={mask.feather ?? 0.004} fmt={(v) => `${Math.round(v * 1000) / 10}%`} disabled={busy}
-                      onChange={(v) => setMask({ feather: v }, false)} onCommit={onCommit} />
-              <label className="switch-row">
-                <span><b>反转</b><small>留下抠出部分以外的画面</small></span>
-                <input type="checkbox" className="switch" checked={!!mask.invert} disabled={busy} onChange={(e) => setMask({ invert: e.target.checked })} />
-              </label>
-            </>
-          )}
+          <Chips items={MASKS.filter(([id]) => id !== 'cutout')} value={mask.shape} disabled={busy} onPick={(shape) => setMask({ shape })} />
           {mask.shape !== 'none' && mask.shape !== 'cutout' && (
             <>
               <Slider label="大小" min={0.05} max={2} step={0.01} value={mask.size} fmt={(v) => `${Math.round(v * 100)}%`} disabled={busy}
                       onChange={(v) => setMask({ size: v }, false)} onCommit={onCommit} />
               <Slider label="羽化" min={0} max={0.5} step={0.01} value={mask.feather} fmt={(v) => `${Math.round(v * 200)}%`} disabled={busy}
                       onChange={(v) => setMask({ feather: v }, false)} onCommit={onCommit} />
-              <Slider label="旋转" min={-180} max={180} step={1} value={mask.rot} fmt={(v) => `${v}°`} disabled={busy}
-                      onChange={(v) => setMask({ rot: v }, false)} onCommit={onCommit} />
-              <label className="switch-row">
-                <span><b>反转</b><small>显示蒙版外面，挖掉里面</small></span>
-                <input type="checkbox" className="switch" checked={!!mask.invert} disabled={busy} onChange={(e) => setMask({ invert: e.target.checked })} />
-              </label>
-              <p className="caption">在预览上拖蒙版中间的点移动，拖侧边的点调大小，拖上方的点旋转。</p>
             </>
           )}
         </section>
@@ -270,56 +214,14 @@ export default function OverlayProps({ ov, thumb, pip, busy, onClose, onChange, 
       </section>
 
       <section>
-        <h3>关键帧</h3>
-        {here >= 0 && here < keys.length - 1 && (
-          <div className="field">
-            <span className="field-label">到下一个关键帧怎么动</span>
-            <Chips items={EASES} value={keys[here].e || 'smooth'} disabled={busy}
-                   onPick={(e) => set({ keys: keys.map((k, i) => (i === here ? { ...k, e } : k)) })} />
-          </div>
-        )}
-        <Slider label="动感模糊" min={0} max={1.5} step={0.1} value={ov.mblur || 0} fmt={(v) => `${Math.round(v * 100)}%`} disabled={busy}
-                onChange={(v) => onChange({ mblur: v })} onCommit={onCommit} />
-        {keys.length > 0 && <button className="wide" disabled={busy} onClick={() => set({ keys: [] })}>清除全部关键帧</button>}
-      </section>
-
-      <section>
         <h3>入场 / 出场</h3>
         {[['anim_in', '入场'], ['anim_out', '出场']].map(([which, label]) => (
           <div key={which} className="field">
             <span className="field-label">{label}</span>
             <Chips items={which === 'anim_in' ? ANIMS : ANIMS.map(([id, l]) => [id, l.replace('入', '出').replace('渐显', '渐隐')])}
                    value={anim(which).type} disabled={busy} onPick={(type) => set({ [which]: { ...anim(which), type } })} />
-            {anim(which).type !== 'none' && (
-              <div className="segmented">
-                {[[0.5, '半拍'], [1, '一拍']].map(([b, l]) => (
-                  <button key={b} className={anim(which).beats === b ? 'on' : ''} disabled={busy} onClick={() => set({ [which]: { ...anim(which), beats: b } })}>{l}</button>
-                ))}
-              </div>
-            )}
           </div>
         ))}
-        <p className="caption">动画时长按节拍算，正好踩在拍子上。</p>
-      </section>
-
-      <section>
-        <h3>样式</h3>
-        <Slider label="圆角" min={0} max={0.5} step={0.02} value={ov.radius} fmt={(v) => `${Math.round(v * 200)}%`} disabled={busy}
-                onChange={(v) => onChange({ radius: v })} onCommit={onCommit} />
-        <label className="switch-row">
-          <span><b>白色描边</b></span>
-          <input type="checkbox" className="switch" checked={!!ov.border} disabled={busy} onChange={(e) => set({ border: e.target.checked })} />
-        </label>
-      </section>
-
-      <section>
-        <h3>轨道</h3>
-        <div className="segmented three">
-          {[0, 1, 2].map((k) => (
-            <button key={k} className={ov.track === k ? 'on' : ''} disabled={busy} onClick={() => set({ track: k })}>画中画 {k + 1}</button>
-          ))}
-        </div>
-        <p className="caption">数字大的轨道叠在上面。在时间轴上拖动可改时间和轨道，拖两端可剪短。</p>
       </section>
           {ov.group?.kind === 'grow' && (
             <section>

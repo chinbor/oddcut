@@ -235,7 +235,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     if (cutTool === 'pick') {
       e.preventDefault(); e.stopPropagation()
       const [x, y] = boxPoint(e, o, el)
-      onOverlayDraft(o.id, { mask: { ...m, shape: 'cutout', target: { kind: 'object', x, y } } })
+      onOverlayDraft(o.id, { mask: { ...m, shape: 'cutout', target: { kind: 'object', x, y, t: Math.max(0, Math.round(ovLocal(o) * fps) / fps) } } })
       onOverlayCommit()
       setCutTool('review')
       return
@@ -523,8 +523,9 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
         <button className="icon" onClick={() => step(1)} title="下一帧（→）"><Icon name="next" /></button>
         <span className={`keyctl ${keyState?.enabled ? '' : 'off'}`}>
           <button className="icon mini" disabled={!keyState?.prev} onClick={() => onKeySeek(keyState.prev)} title="上一个关键帧">‹</button>
-          <button className={`kbtn big ${keyState?.on ? 'on' : ''}`} disabled={!keyState?.enabled} onClick={onKeyToggle}
-                  title={!keyState?.enabled ? '选中一个画中画，才能给它加关键帧' : keyState.on ? '删除这一刻的关键帧' : '在这一刻记下位置、缩放、旋转、透明度'}><i /></button>
+          <button className={`keybtn ${keyState?.on ? 'on' : ''}`} disabled={!keyState?.enabled} onClick={onKeyToggle}
+                  title={!keyState?.enabled ? '选中一个画中画，才能给它加关键帧' : keyState.on ? '删除这一刻的关键帧' : '在这一刻记下位置、大小、旋转、透明度'}>
+            <i />{keyState?.on ? '删除关键帧' : '添加关键帧'}</button>
           <button className="icon mini" disabled={!keyState?.next} onClick={() => onKeySeek(keyState.next)} title="下一个关键帧">›</button>
         </span>
         {segment && (

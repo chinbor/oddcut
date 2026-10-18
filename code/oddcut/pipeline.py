@@ -897,6 +897,56 @@ def split_shot(analysis: Analysis, p: Plan, index: int, t: float) -> tuple[Plan,
     return replace(p, shots=shots, looks={**p.looks, "edited_cuts": True}), []
 
 
+def trim_shot(analysis: Analysis, p: Plan, index: int, side: str, t: float, snap: bool = False) -> tuple[Plan, list[str]]:
+    """修剪, as in 剪映: drag shot `index`'s start edge ('in') or end edge ('out') to timeline time `t`. The shot
+    gets shorter or longer and everything after it moves up or back (the 画中画 layers and 万物生长 that start
+    after its end too), so the video gets shorter or longer. 'in' starts the footage later (or earlier) in the
+    clip; the shot itself stays where it starts. snap: the edge goes onto the nearest beat."""
+    if not 0 <= index < len(p.shots):
+        raise IndexError(f"shot {index} out of range")
+    fps = float(p.template["output"]["fps"])
+    s = p.shots[index]
+    if snap:
+        grid = analysis.music.grid
+        if len(grid):
+            t = float(grid[np.argmin(np.abs(grid - t))])
+    clip_len = _clip_len(analysis, s.clip.path) or 1e9
+    min_n = int(np.ceil(MIN_SHOT * fps))
+    if side == "out":
+        n = int(round((t - s.t_start) * fps))
+        n = max(min_n, min(n, int((clip_len - s.src_start - 0.05) * fps)))
+        dn, src = n - s.frames, s.src_start
+    else:
+        cut = int(round((t - s.t_start) * fps))           # frames taken off the front (negative: put back)
+        cut = max(-int(s.src_start * fps), min(cut, s.frames - min_n))
+        dn, src = -cut, s.src_start + cut / fps
+    if dn == 0 and src == s.src_start:
+        return p, []
+    d = dn / fps
+    if s.drawn:
+        rs, tail = _drawn_cfg(p.template, index)
+        if s.drawn["reveal_at"] + rs + tail > (s.frames + dn) / fps + 1e-6:
+            raise ValueError("手绘需要时间，这个镜头不能再短了")
+    edge = s.t_end
+    first = replace(s, src_start=src, t_end=s.t_end + d, frames=s.frames + dn)
+    if s.sticker_at and side == "in":
+        first = replace(first, sticker_at=_shift_keys(s.sticker_at, -(src - s.src_start)))
+    after = [replace(x, t_start=x.t_start + d, t_end=x.t_end + d) for x in p.shots[index + 1:]]
+    shots = list(p.shots[:index]) + [first] + after
+    looks = dict(p.looks)
+    moved = []
+    for o in looks.get("overlays") or []:
+        if o["t_start"] >= edge - 1e-3:
+            o = {**o, "t_start": o["t_start"] + d, "t_end": o["t_end"] + d}
+        moved.append(o)
+    looks["grow_presets"] = [({**g, "cut": round(g["cut"] + d, 4), "land": round(g["land"] + d, 4)} if g["cut"] >= edge - 1e-3 else g)
+                             for g in looks.get("grow_presets") or []]
+    looks["edited_cuts"] = True
+    q = replace(p, shots=shots, looks=looks)
+    looks["overlays"] = _check_overlays(analysis, q.duration, moved)
+    return replace(q, looks=looks), []
+
+
 def move_shot(analysis: Analysis, p: Plan, src: int, dst: int) -> tuple[Plan, list[str]]:
     """Move shot `src` to position `dst` (as in a timeline drag). Every shot keeps its footage (clip and start
     in it), its sticker and drawing; the shots are laid end to end in the new order and each cut then goes to
@@ -1022,6 +1072,8 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
             tg = m.get("target") or {}
             if tg.get("kind") == "object":
                 target = {"kind": "object", "x": round(num(tg.get("x"), 0, 1, 0.5), 4), "y": round(num(tg.get("y"), 0, 1, 0.5), 4)}
+                if tg.get("t"):
+                    target["t"] = round(num(tg.get("t"), 0, 3600, 0), 3)
             else:
                 from .cutout import PARTS
                 target = {"kind": "region", "parts": [p_ for p_ in (tg.get("parts") or []) if p_ in PARTS] or ["things"]}
@@ -1032,6 +1084,12 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
                      for b in (m.get("brush") or [])[:60]]
             item["mask"] = {"shape": "cutout", "target": target, "brush": brush,
                             "feather": round(num(m.get("feather"), 0, 0.1, 0.004), 4), "invert": bool(m.get("invert"))}
+            st = m.get("stroke")
+            if isinstance(st, dict):
+                col = str(st.get("color") or "#ffffff")
+                if not (len(col) == 7 and col[0] == "#" and all(c in "0123456789abcdefABCDEF" for c in col[1:])):
+                    col = "#ffffff"
+                item["mask"]["stroke"] = {"color": col.lower(), "width": round(num(st.get("width"), 0.003, 0.08, 0.02), 4)}
             if m.get("hold"):
                 item["mask"]["hold"] = True
             if m.get("dilate"):

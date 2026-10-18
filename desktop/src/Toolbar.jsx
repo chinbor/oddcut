@@ -1,71 +1,72 @@
 import React, { useEffect, useState } from 'react'
 import Icon from './icons.jsx'
 
-// The tools above the preview while a clip (a shot of the main track or a 画中画) is selected - one job each,
-// as in 剪映: 分割 · 抠像 · 画中画 · 特效. (The ◆ keyframe button sits next to the play button.)
-export default function Toolbar({ kind, busy, cutTool, setCutTool, hasCutout, onSplit, onDup, onFromLibrary,
-                                  canGrow, onGrow, drawnStyles, drawPick, onDrawPick }) {
-  const [menu, setMenu] = useState(null)              // 'pip' | 'fx'
-  const [layers, setLayers] = useState(3)
-  useEffect(() => { setMenu(null) }, [kind])
-  if (!kind) return <div className="toolbar empty">选中时间轴上的片段，就能分割、抠像、做画中画和加特效</div>
-  const cutting = !!cutTool
-  const tool = (name, icon, label, onClick, on = false, title = '') => (
-    <button className={`tool ${on ? 'on' : ''}`} disabled={busy} onClick={onClick} title={title}><Icon name={icon} size={18} />{label}</button>
+const COLORS = ['#ffffff', '#000000', '#ffd400', '#ff4d6d']
+const WIDTHS = [[0.01, '细'], [0.02, '中'], [0.035, '粗']]
+
+// The tools above the preview while a clip (a shot of the main track or a 画中画) is selected, as in 剪映:
+// 分割 · 复制 · 粘贴 · 抠像 · 特效 · 删除. 抠像 is one click on the thing; then only 描边 / 擦除 / 添加.
+export default function Toolbar({ kind, busy, cutTool, setCutTool, hasCutout, stroke, onStroke, onSplit, onCopy, onPaste, canPaste,
+                                  onDelete, canGrow, onGrow, drawnStyles, drawPick, onDrawPick }) {
+  const [menu, setMenu] = useState(false)
+  useEffect(() => { setMenu(false) }, [kind])
+  if (!kind) {
+    return (
+      <div className="toolbar empty">
+        <span>点时间轴上的一段，就能分割、复制、抠像</span>
+        {canPaste && <button className="tool" disabled={busy} onClick={onPaste} title="粘贴到播放头这里的画中画轨道（Ctrl+V）"><Icon name="paste" size={18} />粘贴</button>}
+      </div>
+    )
+  }
+  const tool = (icon, label, onClick, on = false, title = '', disabled = false) => (
+    <button className={`tool ${on ? 'on' : ''}`} disabled={busy || disabled} onClick={onClick} title={title}><Icon name={icon} size={18} />{label}</button>
   )
+  const cutting = !!cutTool
+  if (cutting && hasCutout && cutTool !== 'pick') {
+    return (
+      <div className="toolbar cutbar">
+        <b className="cutbar-title"><Icon name="cutout" size={18} />抠像</b>
+        <button className={`tool ${stroke ? 'on' : ''}`} disabled={busy} onClick={() => onStroke(stroke ? null : { color: '#ffffff', width: 0.02 })}>描边</button>
+        {stroke && (
+          <>
+            {COLORS.map((c) => <button key={c} className={`swatch ${stroke.color === c ? 'on' : ''}`} style={{ background: c }} disabled={busy}
+                                       onClick={() => onStroke({ ...stroke, color: c })} aria-label={`描边颜色 ${c}`} />)}
+            <span className="segmented mini">
+              {WIDTHS.map(([w, l]) => <button key={w} className={Math.abs(stroke.width - w) < 1e-3 ? 'on' : ''} disabled={busy} onClick={() => onStroke({ ...stroke, width: w })}>{l}</button>)}
+            </span>
+          </>
+        )}
+        <i className="tb-sep" />
+        <button className={`tool ${cutTool === 'sub' ? 'on' : ''}`} disabled={busy} onClick={() => setCutTool(cutTool === 'sub' ? 'review' : 'sub')}
+                title="在画面上涂，擦掉多抠的地方"><Icon name="eraser" size={18} />擦除</button>
+        <button className={`tool ${cutTool === 'add' ? 'on' : ''}`} disabled={busy} onClick={() => setCutTool(cutTool === 'add' ? 'review' : 'add')}
+                title="在画面上涂，把漏掉的地方加回来"><Icon name="brush2" size={18} />添加</button>
+        <button className="tool" disabled={busy} onClick={() => setCutTool('pick')} title="重新点一个物体">重选</button>
+        <button className="primary done" onClick={() => setCutTool(null)}>完成</button>
+      </div>
+    )
+  }
   return (
     <div className="toolbar">
-      {tool('split', 'scissors', '分割', onSplit, false, '在播放头这里把片段切成两段（Ctrl+B）')}
-      {tool('cut', 'cutout', '抠像', () => setCutTool(cutTool === 'pick' ? null : 'pick'), cutting, '点一下画面里的主体，把它抠出来')}
-      <span className="tool-wrap">
-        {tool('pip', 'layers', '画中画', () => setMenu(menu === 'pip' ? null : 'pip'), menu === 'pip')}
-        {menu === 'pip' && (
-          <div className="tool-menu" onMouseLeave={() => setMenu(null)}>
-            <button onClick={() => { setMenu(null); onDup() }}>复制当前片段为画中画</button>
-            <button onClick={() => { setMenu(null); onFromLibrary() }}>从素材添加画中画</button>
-          </div>
-        )}
-      </span>
-      <span className="tool-wrap">
-        {tool('fx', 'sparkle', '特效', () => setMenu(menu === 'fx' ? null : 'fx'), menu === 'fx' || !!drawPick)}
-        {menu === 'fx' && (
-          <div className="tool-menu wide" onMouseLeave={() => setMenu(null)}>
-            <div className="tm-row">
-              <button className="tm-main" disabled={!canGrow} onClick={() => { setMenu(null); onGrow(layers) }}
-                      title={canGrow ? '在这个片段开头做万物生长' : '选中主轨上的一个片段（不是开场）才能用'}>
-                <b>万物生长</b><small>下一个镜头一层层从下往上长出来</small></button>
-              <span className="segmented mini">
-                {[3, 4].map((n) => <button key={n} className={layers === n ? 'on' : ''} onClick={() => setLayers(n)}>{n} 层</button>)}
-              </span>
+      {tool('scissors', '分割', onSplit, false, '在播放头这里切成两段（Ctrl+B）')}
+      {tool('copy', '复制', onCopy, false, '复制这一段（Ctrl+C），再粘贴就成了画中画')}
+      {tool('paste', '粘贴', onPaste, false, '粘贴到播放头这里的画中画轨道（Ctrl+V）', !canPaste)}
+      {tool('cutout', '抠像', () => setCutTool(cutting ? null : 'pick'), cutting, '点一下画面里的物体，把它抠出来')}
+      {kind === 'shot' && (
+        <span className="tool-wrap">
+          {tool('sparkle', '特效', () => setMenu((m) => !m), menu || !!drawPick)}
+          {menu && (
+            <div className="tool-menu" onMouseLeave={() => setMenu(false)}>
+              <button disabled={!canGrow} onClick={() => { setMenu(false); onGrow(3) }} title={canGrow ? '' : '开场的第一段不能用'}>万物生长</button>
+              {drawnStyles.map((d) => <button key={d.id} onClick={() => { setMenu(false); onDrawPick(d.id) }}>手绘 · {d.name}</button>)}
             </div>
-            <div className="tm-row col">
-              <span className="tm-label"><b>手绘</b><small>选风格，再点画面里要画的物体</small></span>
-              <span className="style-chips">
-                {drawnStyles.map((d) => <button key={d.id} onClick={() => { setMenu(null); onDrawPick(d.id) }}>{d.name}</button>)}
-              </span>
-            </div>
-          </div>
-        )}
-      </span>
-      <span className="tool-hint">
-        {drawPick ? '点一下画面里要画成手绘的物体（Esc 取消）'
-          : cutTool === 'pick' ? (kind === 'shot' ? '点一下画面里的主体：抠出来放到画中画上，可以单独动' : '点一下画面里要留下的主体')
-          : cutTool === 'review' ? '抠好了。边缘不对就点「修整」涂一涂；想换个主体，再点一下「抠像」'
-          : cutTool === 'add' ? '在画面上涂：把漏掉的部分加回来' : cutTool === 'sub' ? '在画面上涂：擦掉多抠的部分' : ''}
-      </span>
-      {cutting && hasCutout && (
-        <span className="tool-sub">
-          <button className={cutTool === 'add' || cutTool === 'sub' ? 'on' : ''} onClick={() => setCutTool(cutTool === 'add' || cutTool === 'sub' ? 'review' : 'add')}>
-            <Icon name="brush2" size={16} />修整</button>
-          {(cutTool === 'add' || cutTool === 'sub') && (
-            <>
-              <button className={cutTool === 'add' ? 'on' : ''} onClick={() => setCutTool('add')}>增加</button>
-              <button className={cutTool === 'sub' ? 'on' : ''} onClick={() => setCutTool('sub')}>擦除</button>
-            </>
           )}
-          <button onClick={() => setCutTool(null)}>完成</button>
         </span>
       )}
+      {kind === 'pip' && tool('trash', '删除', onDelete, false, '删除这个画中画（Delete）')}
+      <span className="tool-hint">
+        {drawPick ? '点一下画面里要画成手绘的物体（Esc 取消）' : cutTool === 'pick' ? '点一下画面里要抠的物体' : ''}
+      </span>
     </div>
   )
 }
