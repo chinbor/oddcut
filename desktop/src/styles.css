@@ -555,3 +555,11 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 .toolbar .segmented.mini { display: inline-flex; flex-wrap: nowrap; flex: none; }
 .toolbar .segmented.mini button { white-space: nowrap; }
 .ov-box .cut-ring { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+
+.ov-box .cut-ring { display: block; }
+.lasso-layer { position: absolute; inset: 0; z-index: 8; cursor: crosshair; }
+.lasso-layer svg { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.lasso-line { fill: rgba(255,255,255,.12); stroke: #fff; stroke-width: 2; stroke-dasharray: 6 4; }
+.lasso-pt { fill: #fff; stroke: #222; stroke-width: 1; }
+.lasso-first { fill: var(--accent); stroke: #fff; stroke-width: 2; }
+.cutbar .segmented.mini button { display: inline-flex; align-items: center; gap: 4px; }

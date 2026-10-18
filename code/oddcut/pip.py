@@ -318,7 +318,7 @@ class _Layer:
             if m.get("shape") == "cutout":
                 from .cutout import cutout_masks
                 self.cut = cutout_masks(o["clip"], o.get("src_start", 0.0), n, fps, self.bw / self.bh, m.get("target") or {},
-                                        m.get("brush"), cache_dir)
+                                        m.get("brush"), cache_dir, m.get("extra"))
                 alpha = np.ones((self.bh, self.bw), np.float32)
             else:
                 alpha = mask_image(o, self.bw, self.bh)

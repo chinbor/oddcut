@@ -223,7 +223,9 @@ export default function App() {
   })
   const [cutTool, setCutTool] = useState(null)            // 抠像 on the preview: 'pick' | 'add' | 'sub'
   const cutKeep = useRef(false)                            // a fresh 抠像: stay in the tool so 修整 is one click away
-  useEffect(() => { setCutTool(cutKeep.current ? 'review' : null); cutKeep.current = false }, [ovSel])
+  const [cutOp, setCutOp] = useState('add')                // the next selection is added to / taken from the cut
+  useEffect(() => { setCutTool(cutKeep.current || null); cutKeep.current = null }, [ovSel])
+  useEffect(() => { if (!cutTool) setCutOp('add') }, [cutTool])
   const applyGrow = guard(async (index, cfg) => commit(await runJob({ kind: 'shot', analysis: analysis.analysis, plan: plan.plan, index, grow: cfg })))
   const autoGrow = guard(async () => {
     const r = await runJob({ kind: 'grow_auto', analysis: analysis.analysis, plan: plan.plan })
@@ -432,7 +434,7 @@ export default function App() {
     if (msg) toast(msg)
   }
   // 抠像 on a main-track shot: the shot copied onto a 画中画 lane, only the clicked thing kept
-  const cutShot = (x, y) => (cutKeep.current = true) && putOverlay(shotAsOverlay(selected, { mask: { shape: 'cutout', target: { kind: 'object', x, y, t: Math.max(0, Math.round((time - plan.shots[selected].t_start) * fpsT) / fpsT) }, feather: 0.004 } }),
+  const cutShot = (target) => (cutKeep.current = cutTool || 'pick') && putOverlay(shotAsOverlay(selected, { mask: { shape: 'cutout', target: { ...target, t: Math.max(0, Math.round((time - plan.shots[selected].t_start) * fpsT) / fpsT) }, feather: 0.004 } }),
                                        '已把主体抠出来放在画中画上：可以单独移动、缩放、加关键帧')
   const dupClip = () => {
     if (curOv) {
@@ -509,7 +511,7 @@ export default function App() {
   }
   const toolbar = (
     <Toolbar kind={curOv ? 'pip' : shotSel ? 'shot' : null} busy={busy} cutTool={cutTool} setCutTool={setCutTool}
-             hasCutout={curOv?.mask?.shape === 'cutout'} stroke={curOv?.mask?.stroke || null} onStroke={setStroke}
+             hasCutout={curOv?.mask?.shape === 'cutout'} stroke={curOv?.mask?.stroke || null} onStroke={setStroke} cutOp={cutOp} setCutOp={setCutOp}
              onSplit={splitClip} onCopy={copyClip} onPaste={pasteClip} canPaste={!!clipboard} onDelete={() => curOv && deleteOverlay(curOv.id)}
              canGrow={!!shotSel && selected > 0} onGrow={(layers) => applyPreset(selected, layers)}
              drawnStyles={looks?.drawn_styles || []} drawPick={drawPick}
@@ -758,7 +760,7 @@ export default function App() {
               drawPick={drawPick} onDrawPick={(x, y) => applyDrawn(Math.max(0, shotAt(time)), drawPick, x, y)} ovShowImage={!!ovDraft || !!live?.starting || (live && live.total > live.done)}
               onBox={(b) => { setBoxMode(false); drawShot(selected, shot.drawn?.style || 'lineart', b) }}
               status={live?.starting ? '正在生成预览…' : null}
-              toolbar={toolbar} keyState={keyState} onKeyToggle={toggleOvKey} onKeySeek={(t) => setTime(t)} onCutShot={cutShot} />
+              toolbar={toolbar} keyState={keyState} onKeyToggle={toggleOvKey} onKeySeek={(t) => setTime(t)} onCutShot={cutShot} cutOp={cutOp} />
 
       {curOv && !shot && (
         <OverlayProps ov={curOv} thumb={clipThumbs[curOv.clip]} pip={pipBox(curOv.clip)} busy={busy} onClose={() => setOvSel(null)}

@@ -348,7 +348,7 @@ def overlay_cutout(plan_path: Path, oid: str, t: float) -> dict:
     n = int(math.ceil((o["t_end"] - o["t_start"]) * fps)) + 2            # as pip._Layer counts, so the cache is shared
     bw, bh = max(2, round(o["w"] * w / 2) * 2), max(2, round(o["h"] * h / 2) * 2)
     masks = cutout_masks(o["clip"], o["src_start"], n, fps, bw / bh, m.get("target") or {},
-                         m.get("brush"), CACHE_DIR / "effects" / "cutouts")
+                         m.get("brush"), CACHE_DIR / "effects" / "cutouts", m.get("extra"))
     f = min(len(masks) - 1, max(0, int(round(t * fps))))
     img = Image.fromarray((masks[f] * 255).astype("uint8"))
     return {"image": _data_url(img), "frames": len(masks)}
@@ -715,7 +715,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         parts = self.path.split("?")[0].strip("/").split("/")
-        if parts[:1] == ["api"] and len(parts) == 2 and parts[1] in ("thumbs", "still", "waveform", "folder", "songs", "clipthumbs", "cutout"):
+        if parts[:1] == ["api"] and len(parts) == 2 and parts[1] in ("thumbs", "still", "waveform", "folder", "songs", "clipthumbs", "cutout", "frame"):
             from urllib.parse import parse_qs, urlsplit
             q = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
             try:
@@ -731,6 +731,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, {"songs": songs})
                 if parts[1] == "clipthumbs":
                     return self._send(200, clip_thumbs(_path(q["analysis"])))
+                if parts[1] == "frame":                  # one frame of a clip (a 画中画 at the playhead)
+                    clip = _path(q["clip"])
+                    return self._send(200, {"image": frame_at(str(clip), float(q.get("t", 0)), float(q.get("aspect", 1)), 640)})
                 plan_path = _path(q["plan"])
                 if parts[1] == "cutout":
                     return self._send(200, overlay_cutout(plan_path, q["id"], float(q.get("t", 0))))

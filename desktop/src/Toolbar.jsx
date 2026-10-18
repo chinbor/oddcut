@@ -5,8 +5,8 @@ const COLORS = ['#ffffff', '#000000', '#ffd400', '#ff4d6d']
 const WIDTHS = [[0.01, '细'], [0.02, '中'], [0.035, '粗']]
 
 // The tools above the preview while a clip (a shot of the main track or a 画中画) is selected, as in 剪映:
-// 分割 · 复制 · 粘贴 · 抠像 · 特效 · 删除. 抠像 is one click on the thing; then only 描边 / 擦除 / 添加.
-export default function Toolbar({ kind, busy, cutTool, setCutTool, hasCutout, stroke, onStroke, onSplit, onCopy, onPaste, canPaste,
+// 分割 · 复制 · 粘贴 · 抠像 · 特效 · 删除. 抠像: 智能点选 / 钢笔圈选, 添加 / 擦除, 描边.
+export default function Toolbar({ kind, busy, cutTool, setCutTool, hasCutout, stroke, onStroke, cutOp, setCutOp, onSplit, onCopy, onPaste, canPaste,
                                   onDelete, canGrow, onGrow, drawnStyles, drawPick, onDrawPick }) {
   const [menu, setMenu] = useState(false)
   useEffect(() => { setMenu(false) }, [kind])
@@ -22,26 +22,41 @@ export default function Toolbar({ kind, busy, cutTool, setCutTool, hasCutout, st
     <button className={`tool ${on ? 'on' : ''}`} disabled={busy || disabled} onClick={onClick} title={title}><Icon name={icon} size={18} />{label}</button>
   )
   const cutting = !!cutTool
-  if (cutting && hasCutout && cutTool !== 'pick') {
+  if (cutting) {
     return (
       <div className="toolbar cutbar">
         <b className="cutbar-title"><Icon name="cutout" size={18} />抠像</b>
-        <button className={`tool ${stroke ? 'on' : ''}`} disabled={busy} onClick={() => onStroke(stroke ? null : { color: '#ffffff', width: 0.02 })}>描边</button>
-        {stroke && (
+        <span className="segmented mini">
+          <button className={cutTool === 'pick' ? 'on' : ''} disabled={busy} onClick={() => setCutTool('pick')} title="点一下物体，自动选中（像魔法棒）">
+            <Icon name="wand" size={16} />智能点选</button>
+          <button className={cutTool === 'pen' ? 'on' : ''} disabled={busy} onClick={() => setCutTool('pen')} title="自己沿边缘圈出要的区域">
+            <Icon name="pen" size={16} />钢笔圈选</button>
+        </span>
+        {hasCutout && (
+          <span className="segmented mini">
+            <button className={cutOp === 'add' ? 'on' : ''} disabled={busy} onClick={() => setCutOp('add')} title="下一次选的区域加进来">添加</button>
+            <button className={cutOp === 'sub' ? 'on' : ''} disabled={busy} onClick={() => setCutOp('sub')} title="下一次选的区域减掉">擦除</button>
+          </span>
+        )}
+        {hasCutout && (
           <>
-            {COLORS.map((c) => <button key={c} className={`swatch ${stroke.color === c ? 'on' : ''}`} style={{ background: c }} disabled={busy}
-                                       onClick={() => onStroke({ ...stroke, color: c })} aria-label={`描边颜色 ${c}`} />)}
-            <span className="segmented mini">
-              {WIDTHS.map(([w, l]) => <button key={w} className={Math.abs(stroke.width - w) < 1e-3 ? 'on' : ''} disabled={busy} onClick={() => onStroke({ ...stroke, width: w })}>{l}</button>)}
-            </span>
+            <i className="tb-sep" />
+            <button className={`tool ${stroke ? 'on' : ''}`} disabled={busy} onClick={() => onStroke(stroke ? null : { color: '#ffffff', width: 0.02 })}>描边</button>
+            {stroke && (
+              <>
+                {COLORS.map((c) => <button key={c} className={`swatch ${stroke.color === c ? 'on' : ''}`} style={{ background: c }} disabled={busy}
+                                           onClick={() => onStroke({ ...stroke, color: c })} aria-label={`描边颜色 ${c}`} />)}
+                <span className="segmented mini">
+                  {WIDTHS.map(([w, l]) => <button key={w} className={Math.abs(stroke.width - w) < 1e-3 ? 'on' : ''} disabled={busy} onClick={() => onStroke({ ...stroke, width: w })}>{l}</button>)}
+                </span>
+              </>
+            )}
           </>
         )}
-        <i className="tb-sep" />
-        <button className={`tool ${cutTool === 'sub' ? 'on' : ''}`} disabled={busy} onClick={() => setCutTool(cutTool === 'sub' ? 'review' : 'sub')}
-                title="在画面上涂，擦掉多抠的地方"><Icon name="eraser" size={18} />擦除</button>
-        <button className={`tool ${cutTool === 'add' ? 'on' : ''}`} disabled={busy} onClick={() => setCutTool(cutTool === 'add' ? 'review' : 'add')}
-                title="在画面上涂，把漏掉的地方加回来"><Icon name="brush2" size={18} />添加</button>
-        <button className="tool" disabled={busy} onClick={() => setCutTool('pick')} title="重新点一个物体">重选</button>
+        <span className="tool-hint">
+          {cutTool === 'pen' ? '沿边缘一下下点，点回第一个点或双击闭合；也可以按住拖一圈（Esc 取消）'
+            : hasCutout ? (cutOp === 'sub' ? '点一下要去掉的部分' : '点一下还要加进来的物体') : '点一下画面里要抠的物体'}
+        </span>
         <button className="primary done" onClick={() => setCutTool(null)}>完成</button>
       </div>
     )
@@ -64,9 +79,7 @@ export default function Toolbar({ kind, busy, cutTool, setCutTool, hasCutout, st
         </span>
       )}
       {kind === 'pip' && tool('trash', '删除', onDelete, false, '删除这个画中画（Delete）')}
-      <span className="tool-hint">
-        {drawPick ? '点一下画面里要画成手绘的物体（Esc 取消）' : cutTool === 'pick' ? '点一下画面里要抠的物体' : ''}
-      </span>
+      <span className="tool-hint">{drawPick ? '点一下画面里要画成手绘的物体（Esc 取消）' : ''}</span>
     </div>
   )
 }

@@ -33,7 +33,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
                                  onMoveKey, onCommit, onDeleteKey, onStillKey, onPlaceAuto, onDropSticker, recordArmed,
                                  onRecorded, boxMode, onBox, status, wave, segment, loop, setLoop, overlays = [], ovSel,
                                  onSelectOverlay, onOverlayDraft, onOverlayCommit, clipThumbs = {}, ovShowImage, cutTool, setCutTool,
-                                 planPath, drawPick, onDrawPick, toolbar, keyState, onKeyToggle, onKeySeek, onCutShot }) {
+                                 planPath, drawPick, onDrawPick, toolbar, keyState, onKeyToggle, onKeySeek, onCutShot, cutOp = 'add' }) {
   const boxRef = useRef(null)
   const [aw, ah] = aspect
   const keep = useRef({ t: 0, playing: false })
@@ -228,29 +228,72 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     return [Math.min(1, Math.max(0, 0.5 + (dx * Math.cos(ang) - dy * Math.sin(ang)) / bw)),
             Math.min(1, Math.max(0, 0.5 + (dx * Math.sin(ang) + dy * Math.cos(ang)) / bh))]
   }
-  // 抠像 tools on the selected layer: click an object to cut it out; paint to add to / erase from the cut
-  const cutDown = (e, o) => {
-    const el = e.currentTarget
+  // 抠像 on the selected layer: the first selection is the cut; later ones are added to it or taken from it
+  // (添加 / 擦除), each cut in the frame on screen and followed through the clip
+  const applySelection = (o, target) => {
     const m = o.mask || {}
-    if (cutTool === 'pick') {
-      e.preventDefault(); e.stopPropagation()
-      const [x, y] = boxPoint(e, o, el)
-      onOverlayDraft(o.id, { mask: { ...m, shape: 'cutout', target: { kind: 'object', x, y, t: Math.max(0, Math.round(ovLocal(o) * fps) / fps) } } })
-      onOverlayCommit()
-      setCutTool('review')
-      return
-    }
-    const pts = [boxPoint(e, o, el)]
-    setStroke({ op: cutTool, pts })
-    drag(e, (ev) => { pts.push(boxPoint(ev, o, el)); setStroke({ op: cutTool, pts: [...pts] }) }, () => {
-      setStroke(null)
-      onOverlayDraft(o.id, { mask: { ...m, brush: [...(m.brush || []), { op: cutTool, r: 0.03, pts: pts.filter((_, i) => i % 2 === 0 || i === pts.length - 1) }] } })
-      onOverlayCommit()
-    })
+    const t = Math.max(0, Math.round(ovLocal(o) * fps) / fps)
+    const tg = { ...target, t }
+    if (m.shape !== 'cutout') onOverlayDraft(o.id, { mask: { shape: 'cutout', target: tg, feather: 0.004 } })
+    else onOverlayDraft(o.id, { mask: { ...m, extra: [...(m.extra || []), { op: cutOp, target: tg }] } })
+    onOverlayCommit()
   }
+  const cutDown = (e, o) => {
+    if (cutTool !== 'pick') return
+    e.preventDefault(); e.stopPropagation()
+    const [x, y] = boxPoint(e, o, e.currentTarget)
+    applySelection(o, { kind: 'object', x, y })
+  }
+  // 钢笔圈选: click points (close on the first point or a double-click) or press and drag a free outline; Esc cancels
+  const [lasso, setLasso] = useState(null)            // {pts: [[x, y] px in the frame], cx: [[clientX, clientY]]}
+  useEffect(() => { setLasso(null) }, [cutTool, ovSel])
+  useEffect(() => {
+    if (!lasso) return
+    const esc = (ev) => { if (ev.key === 'Escape') { ev.stopImmediatePropagation(); setLasso(null) } }
+    window.addEventListener('keydown', esc, true)
+    return () => window.removeEventListener('keydown', esc, true)
+  }, [!!lasso])
+  const finishLasso = (cx) => {
+    setLasso(null)
+    if (cx.length < 3) return
+    const o = overlays.find((x) => x.id === ovSel)
+    if (o) {
+      const el = boxRef.current.querySelector(`.ov-box[data-id="${o.id}"]`)
+      if (el) applySelection(o, { kind: 'lasso', pts: cx.map(([clientX, clientY]) => boxPoint({ clientX, clientY }, o, el)) })
+    } else if (shot) {
+      onCutShot({ kind: 'lasso', pts: cx.map(([clientX, clientY]) => norm({ clientX, clientY })) })
+    }
+  }
+  const lassoDown = (e) => {
+    if (e.button !== 0) return
+    e.preventDefault(); e.stopPropagation()
+    const r = rect()
+    const px = (ev) => [ev.clientX - r.left, ev.clientY - r.top]
+    const cur = lasso || { pts: [], cx: [] }
+    const x0 = e.clientX, y0 = e.clientY
+    let free = null
+    const mv = (ev) => {
+      if (!free && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 5) return
+      if (!free) free = { pts: [px(e)], cx: [[x0, y0]] }
+      const last = free.cx[free.cx.length - 1]
+      if (Math.hypot(ev.clientX - last[0], ev.clientY - last[1]) < 3) return
+      free = { pts: [...free.pts, px(ev)], cx: [...free.cx, [ev.clientX, ev.clientY]] }
+      setLasso({ ...free, free: true })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up)
+      if (free) return finishLasso(free.cx)                   // a free outline closes itself
+      const first = cur.cx[0]
+      if (first && cur.cx.length >= 3 && Math.hypot(x0 - first[0], y0 - first[1]) < 10) return finishLasso(cur.cx)
+      setLasso({ pts: [...cur.pts, px(e)], cx: [...cur.cx, [x0, y0]] })
+    }
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
+  }
+  // a 画中画's own frame at the playhead, shown while it is dragged or the preview is being made again
+  const [ovFrame, setOvFrame] = useState(null)
   const ovDown = (e, o) => {
     if (e.button !== 0) return
-    if (o.id === ovSel && cutTool && cutTool !== 'review') return cutDown(e, o)
+    if (o.id === ovSel && cutTool === 'pick') return cutDown(e, o)
     if (o.id !== ovSel) onSelectOverlay(o.id)
     const el = e.currentTarget
     const p0 = keyPose(o, ovLocal(o))
@@ -361,6 +404,18 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     return () => { alive = false }
   }, [cutImg, strokeOpt?.color, strokeOpt?.width])
   const liveOv = overlays.filter((o) => time >= o.t_start && time < o.t_end).sort((a, b) => a.track - b.track)
+  const frameKey = selOv && !playing && time >= selOv.t_start && time < selOv.t_end && !selOv.grid
+    ? `${selOv.clip}|${(selOv.src_start + ovLocal(selOv)).toFixed(2)}|${selOv.w}|${selOv.h}` : null
+  useEffect(() => {
+    if (!frameKey) { setOvFrame(null); return }
+    let alive = true
+    const fr = rect()
+    const id = setTimeout(() => {
+      window.oddcut.api('GET', `/api/frame?clip=${encodeURIComponent(selOv.clip)}&t=${(selOv.src_start + ovLocal(selOv)).toFixed(3)}&aspect=${((selOv.w * fr.width) / (selOv.h * fr.height)).toFixed(5)}`)
+        .then((r) => { if (alive) setOvFrame({ key: frameKey, image: r.image }) }).catch(() => {})
+    }, 60)
+    return () => { alive = false; clearTimeout(id) }
+  }, [frameKey])
 
   // 边播边拖: hold the sticker, playback runs at half speed, the drag is recorded and thinned into keyframes
   const startRecording = (e) => {
@@ -405,7 +460,7 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
     setMenu(null)
     if (e.button !== 0) return
     if (drawPick) { e.preventDefault(); onDrawPick(...norm(e)); return }
-    if (cutTool === 'pick' && shot && !ovSel) { e.preventDefault(); onCutShot(...norm(e)); return }   // 抠像 on a main-track shot
+    if (cutTool === 'pick' && shot && !ovSel) { e.preventDefault(); const [x, y] = norm(e); onCutShot({ kind: 'object', x, y }); return }   // 抠像 on a main-track shot
     if (boxMode) {
       const [x0, y0] = norm(e)
       let b = [x0, y0, x0, y0]
@@ -490,10 +545,12 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
               const mr = m ? (m.size * Math.min(bw, bh)) / 2 : 0
               const ma = m ? (m.rot * Math.PI) / 180 : 0
               return (
-                <div key={o.id} className={`ov-box ${sel ? 'sel' : ''} ${sel && ovShowImage ? 'show' : ''} ${sel && cutTool ? `tool-${cutTool}` : ''}`} onPointerDown={(e) => ovDown(e, o)}
+                <div key={o.id} data-id={o.id} className={`ov-box ${sel ? 'sel' : ''} ${sel && ovShowImage ? 'show' : ''} ${sel && cutTool ? `tool-${cutTool}` : ''}`} onPointerDown={(e) => ovDown(e, o)}
                      title={sel ? '拖动移动，拖四角缩放，拖上面的圆点旋转' : `画中画 ${o.track + 1}：点一下选中`}
                      style={{ ...poseStyle(o, p), borderRadius: o.radius * Math.min(bw, bh) }}>
-                  {sel && clipThumbs[o.clip] && <img src={clipThumbs[o.clip]} alt="" draggable={false} style={{ opacity: o.opacity }} />}
+                  {sel && (o.grid ? clipThumbs[o.clip] : ovFrame?.key === frameKey && ovFrame.image) && (
+                    <img src={o.grid ? clipThumbs[o.clip] : ovFrame.image} alt="" draggable={false} style={{ opacity: o.opacity }} />
+                  )}
                   {sel && cutImg && o.mask?.shape === 'cutout' && (!o.fx || cutTool) && (
                     <i className="cut-preview" style={{ WebkitMaskImage: `url(${cutImg})`, maskImage: `url(${cutImg})` }} />
                   )}
@@ -535,6 +592,17 @@ export default function Viewer({ src, videoRef, time, onTime, playing, setPlayin
             )}
           </div>
 
+          {cutTool === 'pen' && (ovSel || shot) && (
+            <div className="lasso-layer" onPointerDown={lassoDown}
+                 onDoubleClick={(e) => { e.preventDefault(); if (lasso && !lasso.free && lasso.cx.length >= 3) finishLasso(lasso.cx) }}>
+              {lasso && (
+                <svg width="100%" height="100%">
+                  <polyline points={lasso.pts.map((p) => p.join(',')).join(' ')} className="lasso-line" />
+                  {!lasso.free && lasso.pts.map((p, k) => <circle key={k} cx={p[0]} cy={p[1]} r={k === 0 ? 6 : 4} className={k === 0 ? 'lasso-first' : 'lasso-pt'} />)}
+                </svg>
+              )}
+            </div>
+          )}
           {boxMode && <span className="frame-tip">在画面上框出要画的东西</span>}
           {drawPick && <span className="frame-tip">点一下画面里要画成手绘的物体（Esc 取消）</span>}
           {!boxMode && recordArmed && visible && <span className="frame-tip">按住贴纸拖动，视频会慢速播放并记录路线；松开结束</span>}

@@ -1069,21 +1069,30 @@ def _check_overlays(analysis: Analysis, total: float, overlays) -> list[dict]:
             item["name"] = {"2v": "上下分屏", "2h": "左右分屏", "3v": "三宫格", "4": "四宫格", "9": "九宫格"}[grid["layout"]]
         m = o.get("mask") or {}
         if m.get("shape") == "cutout" and not grid:
-            tg = m.get("target") or {}
-            if tg.get("kind") == "object":
-                target = {"kind": "object", "x": round(num(tg.get("x"), 0, 1, 0.5), 4), "y": round(num(tg.get("y"), 0, 1, 0.5), 4)}
-                if tg.get("t"):
+            def cut_target(tg):
+                if tg.get("kind") == "object":
+                    target = {"kind": "object", "x": round(num(tg.get("x"), 0, 1, 0.5), 4), "y": round(num(tg.get("y"), 0, 1, 0.5), 4)}
+                elif tg.get("kind") == "lasso":
+                    target = {"kind": "lasso", "pts": [[round(num(q[0], 0, 1, 0), 4), round(num(q[1], 0, 1, 0), 4)]
+                                                       for q in (tg.get("pts") or [])[:600]]}
+                else:
+                    from .cutout import PARTS
+                    target = {"kind": "region", "parts": [p_ for p_ in (tg.get("parts") or []) if p_ in PARTS] or ["things"]}
+                    if tg.get("band"):
+                        target["band"] = True
+                if tg.get("t") and target["kind"] != "region":
                     target["t"] = round(num(tg.get("t"), 0, 3600, 0), 3)
-            else:
-                from .cutout import PARTS
-                target = {"kind": "region", "parts": [p_ for p_ in (tg.get("parts") or []) if p_ in PARTS] or ["things"]}
-                if tg.get("band"):
-                    target["band"] = True
+                return target
+            target = cut_target(m.get("target") or {})
             brush = [{"op": "sub" if b.get("op") == "sub" else "add", "r": round(num(b.get("r"), 0.005, 0.3, 0.04), 4),
                       "pts": [[round(num(q[0], 0, 1, 0), 4), round(num(q[1], 0, 1, 0), 4)] for q in (b.get("pts") or [])[:400]]}
                      for b in (m.get("brush") or [])[:60]]
             item["mask"] = {"shape": "cutout", "target": target, "brush": brush,
                             "feather": round(num(m.get("feather"), 0, 0.1, 0.004), 4), "invert": bool(m.get("invert"))}
+            extra = [{"op": "sub" if e.get("op") == "sub" else "add", "target": cut_target(e.get("target") or {})}
+                     for e in (m.get("extra") or [])[:20] if isinstance(e, dict)]
+            if extra:
+                item["mask"]["extra"] = extra
             st = m.get("stroke")
             if isinstance(st, dict):
                 col = str(st.get("color") or "#ffffff")

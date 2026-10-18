@@ -9,6 +9,10 @@ What to cut out (overlay.mask = {"shape": "cutout", "target": ..., "brush": [...
                                            several together make one cumulative piece ("ground and what is on it")
         band: true                         ...as one solid band up from the bottom of the picture to their top
                                            edge (loose crumbs, gaps and holes below it are filled in)
+    {"kind": "lasso", "pts": [[x, y], ...], "t": ..}
+                                           the region drawn by hand (钢笔圈选) in the frame at t
+extra: [{"op": "add" | "sub", "target": {...}}]
+    more selections (智能点选 / 钢笔圈选) added to or taken away from the first, each followed through the clip.
 brush: [{"op": "add" | "sub", "r": radius (share of the box's short side), "pts": [[x, y], ...]}]
     strokes painted on top, in box coordinates (they stay put; the cut itself follows the picture).
 
@@ -177,6 +181,12 @@ def _band(m: np.ndarray) -> np.ndarray:
 
 def first_mask(info: dict, target: dict, shape) -> np.ndarray:
     h, w = shape
+    if target.get("kind") == "lasso":
+        pts = np.array([[p[0] * w, p[1] * h] for p in target.get("pts") or []], np.int32)
+        img = np.zeros((h, w), np.uint8)
+        if len(pts) >= 3:
+            cv2.fillPoly(img, [pts], 255, cv2.LINE_AA)
+        return img > 127
     if target.get("kind") == "object":
         x, y = int(np.clip(target["x"], 0, 0.999) * w), int(np.clip(target["y"], 0, 0.999) * h)
         hit = [m for m in info["things"] if m[y, x]]
@@ -222,8 +232,19 @@ def key_of(path: str, start: float, frames: int, fps: float, aspect: float, targ
 
 
 def cutout_masks(path: str, start: float, frames: int, fps: float, aspect: float, target: dict,
-                 brush: list | None = None, cache_dir: Path | None = None) -> np.ndarray:
-    """Masks (frames x SEG_H x w, bool) of `target` in the clip from `start`, followed along the optical flow."""
+                 brush: list | None = None, cache_dir: Path | None = None, extra: list | None = None) -> np.ndarray:
+    """Masks (frames x SEG_H x w, bool) of `target` in the clip from `start`, followed along the optical flow,
+    with the `extra` selections added / taken away, then the brush strokes."""
+    out = _tracked(path, start, frames, fps, aspect, target, cache_dir)
+    for e in extra or []:
+        m = _tracked(path, start, frames, fps, aspect, e.get("target") or {}, cache_dir)
+        out = (out & ~m) if e.get("op") == "sub" else (out | m)
+    return np.array([_brush(x, brush) for x in out])
+
+
+def _tracked(path: str, start: float, frames: int, fps: float, aspect: float, target: dict,
+             cache_dir: Path | None = None) -> np.ndarray:
+    """One selection, cut in the frame at target.t and followed forwards and backwards through the clip."""
     cached = None
     if cache_dir:
         cached = Path(cache_dir) / f"cut_{key_of(path, start, frames, fps, aspect, target)}.npz"
@@ -231,14 +252,14 @@ def cutout_masks(path: str, start: float, frames: int, fps: float, aspect: float
             try:
                 z = np.load(cached)
                 n, h, w = int(z["n"]), int(z["h"]), int(z["w"])
-                masks = np.unpackbits(z["m"], axis=-1)[:n, :h, :w].astype(bool)
-                return np.array([_brush(x, brush) for x in masks])
+                return np.unpackbits(z["m"], axis=-1)[:n, :h, :w].astype(bool)
             except (OSError, ValueError, KeyError):
                 pass
     clip = _frames(path, start, frames, fps, aspect)
     n, h, w = clip.shape[:3]
     k0 = min(n - 1, max(0, int(round(float(target.get("t") or 0) * fps))))   # the frame the user clicked on
-    m0 = _clean(first_mask(analyse(clip[k0]), target, (h, w)))
+    info = {"things": [], "regions": {}} if target.get("kind") == "lasso" else analyse(clip[k0])
+    m0 = _clean(first_mask(info, target, (h, w)))
     out = np.zeros((n, h, w), bool)
     out[k0] = m0
     for rng in (range(k0 + 1, n), range(k0 - 1, -1, -1)):              # followed forwards, then backwards
@@ -251,7 +272,7 @@ def cutout_masks(path: str, start: float, frames: int, fps: float, aspect: float
     if cached is not None:
         cached.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(cached, m=np.packbits(out, axis=-1), n=n, h=h, w=w)
-    return np.array([_brush(x, brush) for x in out])
+    return out
 
 
 def wholeness(m: np.ndarray) -> dict:
